@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="924" viewBox="0 0 760 924" role="img" aria-labelledby="title desc"><title id="title">Persona Agent 最终架构总览</title><desc id="desc">外部环境、Agent 内核、四个功能子系统，以及持久化与事件层、资源与安全层。</desc><rect width="760" height="924" fill="white"/><rect x="12" y="10" width="736" height="904" rx="16" fill="white" stroke="#e8e8e8"/><g font-family="Microsoft YaHei, PingFang SC, Noto Sans CJK SC, sans-serif" text-anchor="middle" fill="#24292d">
+<rect x='25' y='23' width='710' height='67' rx='12' fill='#f6f6f6' stroke='none'/>
+<text x='380' y='50' font-size='14' font-weight='600' fill='#24292d'>外部环境</text>
+<text x='380' y='75' font-size='12' font-weight='400' fill='#777777'>QQ群 / 私聊 / 定时器 / 视频 / 游戏 / 外部工具</text>
+<text x='380' y='112' font-size='18' font-weight='400' fill='#888888'>↓</text>
+<rect x='25' y='129' width='710' height='128' rx='12' fill='#eef3f8' stroke='#acc9e5'/>
+<text x='380' y='157' font-size='14' font-weight='400' fill='#24292d'>Agent 内核（Agent Core）</text>
+<rect x='37' y='173' width='338' height='32' rx='12' fill='#ffffff' stroke='none'/>
+<text x='206' y='194' font-size='12' font-weight='400' fill='#24292d'>事件路由</text>
+<rect x='383' y='173' width='338' height='32' rx='12' fill='#ffffff' stroke='none'/>
+<text x='552' y='194' font-size='12' font-weight='400' fill='#24292d'>行为仲裁</text>
+<rect x='37' y='213' width='338' height='32' rx='12' fill='#ffffff' stroke='none'/>
+<text x='206' y='234' font-size='12' font-weight='400' fill='#24292d'>状态协调</text>
+<rect x='383' y='213' width='338' height='32' rx='12' fill='#ffffff' stroke='none'/>
+<text x='552' y='234' font-size='12' font-weight='400' fill='#24292d'>时间调度</text>
+<text x='380' y='280' font-size='17' font-weight='400' fill='#888888'>↓↑</text>
+<rect x='25' y='296' width='350' height='208' rx='12' fill='#edf5f3' stroke='#a7d1c7'/>
+<text x='200' y='324' font-size='14' font-weight='400' fill='#24292d'>人格状态系统</text>
+<rect x='37' y='340' width='326' height='32' rx='12' fill='#ffffff' stroke='none'/>
+<text x='200' y='361' font-size='12' font-weight='400' fill='#24292d'>人格与属性</text>
+<rect x='37' y='380' width='326' height='32' rx='12' fill='#ffffff' stroke='none'/>
+<text x='200' y='401' font-size='12' font-weight='400' fill='#24292d'>情绪与心情</text>
+<rect x='37' y='420' width='326' height='32' rx='12' fill='#ffffff' stroke='none'/>
+<text x='200' y='441' font-size='12' font-weight='400' fill='#24292d'>需求与动机</text>
+<rect x='37' y='460' width='326' height='32' rx='12' fill='#ffffff' stroke='none'/>
+<text x='200' y='481' font-size='12' font-weight='400' fill='#24292d'>关系档案</text>
+<rect x='385' y='296' width='350' height='208' rx='12' fill='#f7f3ef' stroke='#dfc7ae'/>
+<text x='560' y='324' font-size='14' font-weight='400' fill='#24292d'>活动执行系统</text>
+<rect x='397' y='340' width='326' height='32' rx='12' fill='#ffffff' stroke='none'/>
+<text x='560' y='361' font-size='12' font-weight='400' fill='#24292d'>活动选择与管理</text>
+<rect x='397' y='380' width='326' height='32' rx='12' fill='#ffffff' stroke='none'/>
+<text x='560' y='401' font-size='12' font-weight='400' fill='#24292d'>中断、恢复、承诺</text>
+<rect x='397' y='420' width='326' height='32' rx='12' fill='#ffffff' stroke='none'/>
+<text x='560' y='441' font-size='12' font-weight='400' fill='#24292d'>模拟活动执行器</text>
+<rect x='397' y='460' width='326' height='32' rx='12' fill='#ffffff' stroke='none'/>
+<text x='560' y='481' font-size='12' font-weight='400' fill='#24292d'>真实/混合执行器</text>
+<rect x='25' y='514' width='350' height='208' rx='12' fill='#f4f1f8' stroke='#cdbce9'/>
+<text x='200' y='542' font-size='14' font-weight='400' fill='#24292d'>认知与记忆系统</text>
+<rect x='37' y='558' width='326' height='32' rx='12' fill='#ffffff' stroke='none'/>
+<text x='200' y='579' font-size='12' font-weight='400' fill='#24292d'>事件评价</text>
+<rect x='37' y='598' width='326' height='32' rx='12' fill='#ffffff' stroke='none'/>
+<text x='200' y='619' font-size='12' font-weight='400' fill='#24292d'>经历反思</text>
+<rect x='37' y='638' width='326' height='32' rx='12' fill='#ffffff' stroke='none'/>
+<text x='200' y='659' font-size='12' font-weight='400' fill='#24292d'>长期记忆检索</text>
+<rect x='37' y='678' width='326' height='32' rx='12' fill='#ffffff' stroke='none'/>
+<text x='200' y='699' font-size='12' font-weight='400' fill='#24292d'>叙事事实管理</text>
+<rect x='385' y='514' width='350' height='208' rx='12' fill='#edf5f7' stroke='#a6ced9'/>
+<text x='560' y='542' font-size='14' font-weight='400' fill='#24292d'>社交与表达系统</text>
+<rect x='397' y='558' width='326' height='32' rx='12' fill='#ffffff' stroke='none'/>
+<text x='560' y='579' font-size='12' font-weight='400' fill='#24292d'>群聊会话管理</text>
+<rect x='397' y='598' width='326' height='32' rx='12' fill='#ffffff' stroke='none'/>
+<text x='560' y='619' font-size='12' font-weight='400' fill='#24292d'>社交参与决策</text>
+<rect x='397' y='638' width='326' height='32' rx='12' fill='#ffffff' stroke='none'/>
+<text x='560' y='659' font-size='12' font-weight='400' fill='#24292d'>表达阀门</text>
+<rect x='397' y='678' width='326' height='32' rx='12' fill='#ffffff' stroke='none'/>
+<text x='560' y='699' font-size='12' font-weight='400' fill='#24292d'>回复生成与发送</text>
+<text x='380' y='748' font-size='18' font-weight='400' fill='#888888'>↓</text>
+<rect x='25' y='762' width='710' height='62' rx='12' fill='#f6f6f6' stroke='none'/>
+<text x='380' y='787' font-size='14' font-weight='600' fill='#24292d'>持久化与事件层</text>
+<text x='380' y='810' font-size='12' font-weight='400' fill='#777777'>SQLite / 事件日志 / 状态结算</text>
+<rect x='25' y='836' width='710' height='62' rx='12' fill='#f6f6f6' stroke='none'/>
+<text x='380' y='861' font-size='14' font-weight='600' fill='#24292d'>资源与安全层</text>
+<text x='380' y='884' font-size='12' font-weight='400' fill='#777777'>权限 / 限流 / 日志 / 配置</text>
+</g></svg>

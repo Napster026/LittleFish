@@ -1,0 +1,7 @@
+# 插件元信息草稿；发布前补齐作者与仓库地址，并验证 AstrBot 加载。
+name: astrbot_plugin_persona
+display_name: Persona Agent
+desc: 具有持久状态与可插拔活动执行器的人格化 Agent（开发中）
+version: v0.0.0
+author: ""
+repo: ""
