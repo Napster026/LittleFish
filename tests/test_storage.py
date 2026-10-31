@@ -1,6 +1,7 @@
-"""SQLite 存储测试，使用临时数据库，由开发者手动运行。"""
+"""核心持久化业务集成测试，组合 SQLite 事务适配器，由开发者手动运行。"""
 
 import asyncio
+import json
 import sqlite3
 import unittest
 from contextlib import closing
@@ -11,12 +12,13 @@ from tempfile import TemporaryDirectory
 from core.events import AgentEvent
 from core.settlement import SettlementTimeError, StateChangeProposal, StateVersionConflictError
 from core.state import AgentState
-from infrastructure.storage import (
+from infrastructure.storage import SQLiteStorage
+from application.persistence import PersonaStore
+from persistence.errors import (
     EventAlreadySettledError,
     EventConflictError,
     EventNotFoundError,
     ProposalConflictError,
-    SQLiteStorage,
     StateAlreadyExistsError,
     StateNotFoundError,
     StorageNotOpenError,
@@ -25,11 +27,11 @@ from infrastructure.storage import (
 from persona.needs import NeedState
 
 
-class SQLiteStorageTests(unittest.IsolatedAsyncioTestCase):
+class CorePersistenceTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.directory = TemporaryDirectory()
         self.path = Path(self.directory.name) / "agent.sqlite3"
-        self.storage = SQLiteStorage(self.path)
+        self.storage = PersonaStore(SQLiteStorage(self.path))
         await self.storage.open()
         self.time = datetime(2026, 10, 31, 12, 0, tzinfo=timezone.utc)
         self.state = AgentState(
@@ -71,7 +73,7 @@ class SQLiteStorageTests(unittest.IsolatedAsyncioTestCase):
     async def test_state_survives_reopening(self):
         await self.storage.create_state(self.state)
         await self.storage.close()
-        async with SQLiteStorage(self.path) as reopened:
+        async with PersonaStore(SQLiteStorage(self.path)) as reopened:
             self.assertEqual(await reopened.get_state(self.state.agent_id), self.state)
 
     async def test_missing_reads_return_none(self):
@@ -103,7 +105,18 @@ class SQLiteStorageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.needs.energy, 50)
         self.assertEqual(result.version, 1)
         await self.storage.close()
-        async with SQLiteStorage(self.path) as reopened:
+        # 模拟旧 JSON：默认时间字段尚不存在，重启和原提案重试仍应兼容。
+        with closing(sqlite3.connect(self.path)) as connection:
+            state = json.loads(result.model_dump_json())
+            state.pop("needs_updated_at")
+            state.pop("emotion")
+            proposal = json.loads(self.proposal().model_dump_json())
+            proposal.pop("needs_time")
+            proposal.pop("emotion_change")
+            connection.execute("UPDATE agent_states SET state_json = ?", (json.dumps(state),))
+            connection.execute("UPDATE state_settlements SET proposal_json = ?", (json.dumps(proposal),))
+            connection.commit()
+        async with PersonaStore(SQLiteStorage(self.path)) as reopened:
             self.assertEqual(await reopened.get_state(self.state.agent_id), result)
             self.assertEqual(await reopened.get_event("event-001"), self.event())
             retried = await reopened.commit_proposal(self.proposal(), settled_at=self.time)
@@ -186,7 +199,7 @@ class SQLiteStorageTests(unittest.IsolatedAsyncioTestCase):
         await self.prepare()
         await self.storage.record_event(self.event("event-002"))
         other_proposal = self.proposal(proposal_id="proposal-002", event_id="event-002")
-        async with SQLiteStorage(self.path) as other:
+        async with PersonaStore(SQLiteStorage(self.path)) as other:
             results = await asyncio.gather(
                 self.commit(),
                 other.commit_proposal(other_proposal, settled_at=self.time + timedelta(seconds=1)),
@@ -218,10 +231,10 @@ class SQLiteStorageTests(unittest.IsolatedAsyncioTestCase):
         await self.storage.create_state(self.state)
         await self.storage.close()
         with closing(sqlite3.connect(self.path)) as connection:
-            connection.execute("PRAGMA user_version = 3")
+            connection.execute("PRAGMA user_version = 4")
             connection.commit()
         with self.assertRaises(UnsupportedSchemaError):
             await self.storage.open()
         with closing(sqlite3.connect(self.path)) as connection:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 3)
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 4)
             self.assertEqual(connection.execute("SELECT version FROM agent_states").fetchone()[0], 0)

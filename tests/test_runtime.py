@@ -14,14 +14,19 @@ from core.runtime import (
 )
 from core.settlement import StateChangeProposal
 from core.state import AgentState
-from infrastructure.storage import EventConflictError, SQLiteStorage, StateNotFoundError
+from infrastructure.storage import SQLiteStorage
+from application.persistence import PersonaStore
+from persistence.errors import (
+    EventConflictError,
+    StateNotFoundError,
+)
 from persona.needs import NeedState
 
 
 class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.directory = TemporaryDirectory()
-        self.storage = SQLiteStorage(Path(self.directory.name) / "agent.sqlite3")
+        self.storage = PersonaStore(SQLiteStorage(Path(self.directory.name) / "agent.sqlite3"))
         await self.storage.open()
         self.time = datetime(2026, 10, 31, 12, 0, tzinfo=timezone.utc)
         self.state = AgentState(

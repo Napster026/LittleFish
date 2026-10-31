@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 from core.state import AgentState
 from persona.needs import NeedState
+from persona.emotion import EmotionDynamics, EmotionState, VAD
 
 
 class AgentStateTests(unittest.TestCase):
@@ -39,6 +40,21 @@ class AgentStateTests(unittest.TestCase):
         data["version"] = 7
         saved = AgentState(**data)
         self.assertEqual(AgentState.model_validate_json(saved.model_dump_json()), saved)
+
+    def test_optional_emotion_round_trip_and_time_boundary(self):
+        state = AgentState(**self.state_data())
+        self.assertIsNone(state.emotion)
+        zero = VAD(valence=0, arousal=0, dominance=0)
+        emotion = EmotionState(
+            current=zero, mood=zero, baseline=zero, updated_at=state.updated_at,
+            dynamics=EmotionDynamics(emotion_half_life_seconds=300, mood_half_life_seconds=7200,
+                                     mood_impulse_ratio=0.1),
+        )
+        populated = AgentState(**{**state.model_dump(), "emotion": emotion})
+        self.assertEqual(AgentState.model_validate_json(populated.model_dump_json()), populated)
+        future = EmotionState(**{**emotion.model_dump(), "updated_at": state.updated_at + timedelta(seconds=1)})
+        with self.assertRaises(ValidationError):
+            AgentState(**{**state.model_dump(), "emotion": future})
 
     def test_need_boundaries_are_accepted(self):
         for field in self.state_data()["needs"]:
@@ -78,6 +94,10 @@ class AgentStateTests(unittest.TestCase):
             "version": (-1, True, "1", 1.0),
             "updated_at": (
                 datetime(2026, 10, 31), "2026-10-31T20:00:00", 123, "123",
+            ),
+            "needs_updated_at": (
+                datetime(2026, 10, 31), 123, "123",
+                datetime(2026, 11, 1, tzinfo=timezone.utc),
             ),
         }
         for field, values in invalid_values.items():

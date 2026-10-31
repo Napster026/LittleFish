@@ -2,7 +2,7 @@
 
 基于 AstrBot 的事件驱动、持久化状态与可插拔活动执行器的人格化 Agent。
 
-> 本文是已确定的架构开发基线，不是已完成功能清单。当前已实现基础模块、活动模拟与管理、活动持久化，以及完成活动与角色需求效果的原子结算和旧活动补结算。此前 141 项测试已由开发者本地运行通过；本步新增完成效果的 18 项测试待运行。活动选择与任务栈、自动时钟调度、待处理队列恢复及 AstrBot 插件入口尚未实现。文中“必须”“采用”表示实现约束；其余功能与接口细节仍需逐步落实。
+> 本文是已确定的架构开发基线，不是已完成功能清单。当前已编写事件与结算基础、模拟活动生命周期、持久化调度、模拟活动服务，按实际经过时间计算的 NeedEngine，需求驱动的模拟活动选择，开始/继续/空闲的最小行为仲裁，以及 VAD 情绪的时间回归与事件冲击。自主选择和最小行为仲裁已由开发者测试通过，本次情绪引擎改动尚待回归验证。完整人格系统、社交认知、完整恢复及 AstrBot 插件入口仍未实现。文中“必须”“采用”表示实现约束；不能把已编写等同于已验证或完整交付。
 
 ## 1. 定位与设计原则
 
@@ -52,17 +52,17 @@ Python 负责状态、数值计算、权限、调度与最终行为控制；Deep
 | `register(event_type, handler)` | 注册某个具体事件类型的处理函数，例如 `ACTIVITY.completed` |
 | `await dispatch(event, state)` | 将事件和当前状态交给对应处理函数，返回提案或 `None` |
 
-处理函数的接口为异步 `(AgentEvent, AgentState) -> StateChangeProposal | None`。当前每个具体事件类型只能注册一个处理函数，由其汇总需求变化；重复注册报错，不覆盖原函数。事件名称复用事件模型的校验规则，没有通配或按类别自动广播。
+处理函数的接口为异步 `(AgentEvent, AgentState) -> StateChangeProposal | None`。当前每个具体事件类型只能注册一个处理函数，由其汇总状态变化；重复注册报错，不覆盖原函数。事件名称复用事件模型的校验规则，没有通配或按类别自动广播。
 
 路由器重新校验并复制输入数据，处理函数接收独立副本。返回提案时，路由器再次校验模型，并要求提案的 `event_id`、`agent_id`、`expected_version` 分别与本次事件和状态一致。返回非法类型或错误关联会报错；处理函数执行失败的异常原样向调用方传播，不视为正常无变化。
 
 没有注册处理函数或处理函数明确返回 `None` 时，表示本次不产生需求变更提案。路由器不读写数据库、不发消息、不推进活动、不替代全局行为仲裁，也没有自己的事件队列。事件记录、状态读取、路由和提案提交现由 `AgentRuntime` 顺序编排。
 
-处理函数应只计算提案，成功提案的 ID 和内容在重试时必须保持一致。路由器本身不去重，也不能靠重新生成一份提案保证重试安全；运行时会先识别已结算事件，再复用原提案通过存储层读取最新状态。
+处理函数应只计算提案，成功提案的 ID 和内容在重试时必须保持一致。路由器本身不去重，也不能靠重新生成一份提案保证重试安全；运行时会先识别已结算事件，再复用原提案通过业务提交层读取最新状态。
 
 ### 3.2 当前 AgentRuntime 接口
 
-`core/runtime.py` 已实现绑定单个 `agent_id` 的运行时。构造时传入已打开的 `SQLiteStorage` 与已注册规则的 `EventRouter`，角色初始状态必须预先创建。
+`core/runtime.py` 已实现绑定单个 `agent_id` 的运行时。构造时依赖 `core/ports.py` 中的 `AgentStore` 协议，通常注入已打开的 `PersonaStore` 与已注册规则的 `EventRouter`；角色初始状态必须预先创建。运行时不依赖具体 SQLite 实现。
 
 | 接口或参数 | 作用 |
 | --- | --- |
@@ -89,7 +89,84 @@ submit → 有界内存队列 → 单个工作任务
 
 本阶段仅将成功结算的提案作为持久化去重依据。无对应处理函数或返回 `None` 的事件虽然会记录，但没有“已完成且无变更”的记录，再次提交仍经过路由。等待队列本身尚未持久化；进程异常退出后不会自动恢复未处理事件或扫描重放事件日志，当前不能宣称已实现完整重启恢复。
 
-同一角色应只启动一个运行时负责正常事件顺序。不同连接造成的版本冲突仍由存储层拒绝并回传；当前不自动重新计算。串行工作任务目前适合短规则处理，未来长耗时模型调用需通过独立任务与结果事件解耦，避免长期占用事件处理入口。
+同一角色应只启动一个运行时负责正常事件顺序。不同连接造成的版本冲突仍由业务提交层拒绝并回传；当前不自动重新计算。串行工作任务目前适合短规则处理，未来长耗时模型调用需通过独立任务与结果事件解耦，避免长期占用事件处理入口。
+
+### 3.3 持久化时间调度器
+
+`core/scheduler.py` 的 `TimeScheduler` 为单个角色保存并投递单次定时事件。它通过 `ScheduleStore` 协议调用存储，通过异步回调交付事件；可传入已启动的 `AgentRuntime.submit`。调度器不修改角色状态，也不直接调用活动执行器。
+
+| 对象或接口 | 当前作用 |
+| --- | --- |
+| `ScheduledEvent` | 保存全库唯一的计划 ID、角色 ID、原始事件、到期时间及重试策略 |
+| `ScheduleRecord` | 保存计划及其状态、已记录尝试次数、下次尝试时间、最近错误 |
+| `ScheduleStatus` | `pending` 等待首次投递或重试；`delivered` 已确认成功；`failed` 耗尽次数 |
+| `schedule(plan)` | 先持久化计划再唤醒后台任务；相同 ID 与内容重试不重置记录 |
+| `run_due()` | 串行处理一批最多 100 个到期计划，返回本批成功及失败的计划 ID |
+| `start()` / `stop()` | 启动后台轮询；停止时完成当前投递，余下任务保持待处理 |
+
+所有调度时间必须带时区，统一转换为 UTC。默认每秒检查一次；投递失败默认最多尝试 3 次（含首次），每次失败后等待 5 秒。每个计划可配置 1～100 次尝试和大于 0、最多 86400 秒的固定重试间隔。
+
+```text
+保存单次计划 → pending → 到期读取 → 投递原始 AgentEvent
+  → 回调成功：记录 delivered，之后不再正常投递
+  → 回调失败：记录错误及次数
+      → 未耗尽：仍为 pending，等待下次尝试
+      → 已耗尽：改为 failed，停止自动重试
+```
+
+投递失败不会阻止同批其他计划。重试始终保留原事件的 ID、内容与时间；同一计划 ID 的内容发生变化会拒绝。重启后扫描持久化的到期 `pending` 计划，不补建不存在的周期任务，也不自动重置 `failed` 计划。单个计划的错误保存在数据库，调度器的 `last_error` 提供最近批次或后台异常信息。
+
+若耗尽的是当前运行模拟活动对应的正规 tick，应用层会在记录最终失败的同一事务内，将活动转为 `failed` 并保存失败反馈。旧修订、已暂停或终态活动、其他业务计划不触发此转换，具体规则见 7.6。
+
+投递与成功确认不属于同一个数据库事务。如果接收方已处理事件，但调度器确认前退出，后续会重投。因此这是允许重复的投递机制，接收方必须幂等；已成功结算需求的事件可复用 `AgentRuntime` 现有去重机制。无提案事件及外部动作仍需各自处理幂等，不能由此宣称所有副作用都只发生一次。
+
+同一角色只应运行一个调度器；当前没有跨实例抢占租约。推荐生命周期为：打开存储并创建角色 → 启动运行时 → 启动调度器 → 停止调度器 → 停止运行时 → 关闭存储。调度器停止不会关闭运行时或数据库；接收方尚未启动造成的投递异常也会消耗已记录尝试次数。
+
+调度器自身不处理活动 tick；模拟活动的专门处理入口见 7.6。当前仍不包含周期规则、计划取消或人工重置。调度计划的恢复与运行时内存队列恢复是不同能力；后者仍待实现。
+
+### 3.4 当前最小行为仲裁
+
+`core/arbiter.py` 已实现纯计算的 `BehaviorArbiter`，目前统一处理开始活动、继续当前活动和保持空闲。它不依赖 `activity` 或应用层，不读写数据库，不调用执行器。社交回复、承诺优先级、活动中断、外部工具权限与预算仍属于后续扩展。
+
+| 对象 | 职责 |
+| --- | --- |
+| `BehaviorKind` | `start_activity`、`continue_activity`、`idle` 三种行为 |
+| `BehaviorCandidate` | 候选身份、活动目标、效用与不可用原因 |
+| `ActiveBehavior` / `ArbitrationContext` | 当前占用快照及经过原回执确认的可接续 pending ID |
+| `ArbitrationPolicy` | 是否允许自主启动、禁用的活动定义 ID |
+| `CandidateAssessment` | 每个候选是否允许参与选择，以及允许/拒绝原因 |
+| `BehaviorDecision` | 最终候选、决策原因和完整候选检查结果 |
+
+仲裁按以下规则进行，效用不能绕过硬约束：
+
+1. 检查自主启动开关、活动禁用名单、模拟模式、活动占用和候选可用性。
+2. 只有合法且有正效用的新活动才参与比较；同分按候选 ID 排序。
+3. 单个 running 活动产生 continue 结果，不抢占；单个 paused 或人工 pending 保持空闲，不自动恢复或接管。
+4. 自主选择产生的 pending 可接续原实例，不重新比较历史收益，但仍检查当前开关、禁用、模式、目标与占用约束。
+5. 多项占用活动返回 idle / conflicting_activities，等待宿主处理；没有合法候选则 idle。
+
+关闭自主启动或禁用某定义，只阻止新启动与 pending 接续，不终止已经运行的活动。当前支持真实模式的占用快照以避免另开活动，但自动开始仍仅限 simulated。
+
+`ActivitySelector.evaluate()` 提供全部活动候选的需求分数及不可用原因，`choose()` 保留旧接口和原有评分语义。应用层转换候选与占用快照，再由仲裁器选择；自动启动不再直接采用选择器的局部最优结果。因此，最高分活动被禁用时，仍可选择下一项合法的正收益活动。
+
+`PersonaStore.reserve_behavior()` 在原事务内完成读取、仲裁、创建 pending 和保存回执。回执仍使用 `INTERNAL.activity_selected`，保留旧 reason/scores/policy 字段，新增 `arbitration` 与 `arbitration_policy`。原 `reserve_next_activity()` 保留为使用默认仲裁策略的兼容入口。策略由宿主注入，不是数据库中的全局权限配置；人工控制接口仍需宿主协调。
+
+`AutonomousActivityService` 调用新事务入口，仅执行 start 结果；continue 由原活动 tick 链继续，idle 不启动活动。`last_decision` 提供最近一次决定与拒绝原因。它是内存中的观察入口，已提交的新决策同时保存在事件日志中。
+
+旧回执无需迁移。重放继续复用原决定；如果原活动仍是 pending，则在启动前按当前快照和策略重新仲裁，只允许接续原实例，不选择新实例。被禁用时原实例仍保留 pending，`last_decision` 显示本次拦截结果，原始回执不被改写；解除禁用后可用原键重试。已经结束的原活动不会因旧键重放重新创建。
+
+注入策略的例子：
+
+```python
+from core.arbiter import ArbitrationPolicy, BehaviorArbiter
+
+arbiter = BehaviorArbiter(ArbitrationPolicy(
+    autonomous_enabled=True,
+    disabled_definition_ids={"play"},
+))
+# 构造 AutonomousActivityService 时传入 arbiter=arbiter。
+# 未传入时使用默认策略：允许自主启动、禁用名单为空。
+```
 
 ## 4. 四个功能子系统
 
@@ -99,20 +176,223 @@ submit → 有界内存队列 → 单个工作任务
 | --- | --- |
 | `PersonaManager` | 固定核心角色卡、软层人格与属性；支持低频演化 |
 | `EmotionEngine` | VAD 三维情绪、心情和人格基线；事件冲击与时间回归 |
-| `NeedEngine` | 精力、饱食度、无聊度、社交需求 |
+| `NeedEngine` | 四项需求按经过时间自然变化；活动效果另行结算 |
 | `RelationshipManager` | 熟悉度、信任、亲近感等长期关系档案 |
 
 瞬时情绪向心情回归，心情向人格基线回归。关系档案不是情绪的第三层，也不自动构成回应义务。情绪可以有限影响活动偏好、社交意愿和表达风格，但不拥有最终发言决定权。属性保留基线、上下限、成长速率、可选衰减与行为映射。
 
 本系统计算状态变更提案，由结算器持久化。衰减系数、变化速率和权重属于待调优配置，不视为已定稿参数。
 
+#### 当前 NeedEngine 与需求时钟
+
+`persona/needs.py` 的 `NeedEngine` 是纯计算对象。`NeedRates` 显式配置每小时自然变化量：精力、饱食度只能下降或不变，无聊度、社交需求只能上升或不变。引擎按实际经过小时数计算并限制在 0～100；相同经过时间不依赖 tick 次数，不自行读写状态或安排活动。速率必须显式传入，没有已调优的内置默认值。
+
+`AgentState.needs_updated_at` 保存独立时间游标。旧 JSON 缺少该字段时按 `None` 加载；第一次处理需求事件只在当前处理时间建立基线，不补算未知历史。普通需求效果和活动完成可以更新 `updated_at`，但不修改这个自然时间游标。
+
+`NeedUpdate` 返回有效变化量和 `NeedTimeAdvance(from_at, to_at)`。已经到边界或全部速率为零时，变化量为 `None`，仍推进时间，不创建全零的 `NeedDelta`。`StateChangeProposal` 可携带时间窗口；结算器同时核对角色版本、旧游标及结算时间，并将游标与需求状态一起提交。
+
+`application/needs.py` 的 `NeedTickHandler` 可直接注册到已有 `EventRouter`。事件类型为 `INTERNAL.needs_tick`，来源为 `persona.needs`，payload 保存角色、前一游标、每小时速率快照及检查间隔。处理器使用当前时间计算提案；计划延迟或重启后按整个实际经过时长推进一次，不逐个补跑错过的 tick。
+
+```text
+start_needs_clock → 保存首次计划
+TimeScheduler → AgentRuntime → EventRouter → NeedTickHandler
+  → NeedEngine 计算候选变化与时间窗口
+  → PersonaStore 校验原计划及规则
+  → 同一事务保存需求、时间游标、结算回执及下一次单次计划
+```
+
+下一次检查默认在本次实际处理时间之后 60 秒，可配置 0.001～86400 秒。检查间隔控制唤醒频率，变化速率的单位始终是“每小时”。成功事件重投复用原提案，下一次计划不会被重置；后续计划写入失败则回滚本次需求及游标更新。原事件日志仍沿用运行时先行记录的行为。
+
+下面是已有角色与已打开 `PersonaStore` 的组装示例；速率仅为示例。`stop_event` 由宿主应用在关闭时设置，AstrBot 入口尚未自动接入：
+
+```python
+from datetime import datetime, timezone
+from application.needs import NEEDS_TICK_EVENT_TYPE, NeedTickHandler
+from core.router import EventRouter
+from core.runtime import AgentRuntime
+from core.scheduler import TimeScheduler
+from persona.needs import NeedRates
+
+async def run_needs(storage, agent_id, stop_event):
+    clock = lambda: datetime.now(timezone.utc)
+    rates = NeedRates(energy=-4, satiety=-6, boredom=5, social_need=3)
+    router = EventRouter()
+    router.register(NEEDS_TICK_EVENT_TYPE, NeedTickHandler(clock=clock))
+    await storage.start_needs_clock(agent_id, rates=rates, now=clock())
+    async with AgentRuntime(agent_id, storage, router, clock=clock) as runtime:
+        async with TimeScheduler(agent_id, storage, runtime.submit, clock=clock):
+            await stop_event.wait()
+```
+
+重启时再次调用 `start_needs_clock()` 会找回同一游标对应的 pending 计划。已有计划使用保存的速率快照，当前不支持热切换规则或自动重置失败计划；计划耗尽或处理器未注册导致计划结束时，重新启动会明确报错。与活动共用调度器时，沿用 7.6 的回调分发方式，需求事件进入 `AgentRuntime`，不要为同一角色再启动第二个调度器。
+
+自然变化与活动完成效果是两套规则：自然变化在时钟事件处理时作用于最新需求快照，活动收益仍在完成时结算，没有拆分为连续时间效果。自主选择通过下述应用层入口显式启用；人格及社交与承诺等完整高层行为仲裁留给后续步骤；情绪回归通过下述独立时钟启用。
+
+#### 当前 EmotionEngine 与情绪事件
+
+`persona/emotion.py` 实现纯情绪计算，不调用模型、执行器或数据库。
+
+| 对象 | 含义 |
+| --- | --- |
+| `VAD` | valence 愉悦度、arousal 唤醒度、dominance 掌控感；每个坐标均为 -1～1，0 表示该轴中点 |
+| `EmotionDynamics` | 瞬时情绪和心情半衰期（秒）、心情冲击比例、检查间隔 |
+| `EmotionState` | current 瞬时情绪、mood 心情、baseline 稳定基线、动力参数及独立 updated_at 游标 |
+| `EmotionImpulse` | 一次有界事件冲击，三轴全部显式填写，至少一轴非零 |
+| `EmotionChange` | 依据的旧时间游标与候选新情绪快照 |
+| `EmotionEngine` | `advance()` 时间回归；`apply_impulse()` 先回归到处理时刻，再施加冲击 |
+
+VAD 与冲击坐标拒绝越界值、布尔值、数值字符串及非有限数值。动力参数必须显式提供，瞬时情绪半衰期必须短于心情半衰期；心情冲击比例为 0～1，检查间隔默认 60 秒。参数尚未调优。
+
+时间回归使用耦合方程的解析解：`E' = a(M-E)`、`M' = b(B-M)`，其中 a/b 分别为对应半衰期换算的回归率。瞬时情绪持续追随正在变化的心情，心情追随稳定人格基线；同样经过时长，一次计算和分段计算只存在浮点误差。输入不被修改；长时间离线后直接计算实际经过时间，不逐个补跑旧 tick。基线和动力参数不会随事件或推进改变。
+
+事件冲击在处理时刻生效。每个坐标先对瞬时情绪施加冲击，再对心情施加“原冲击 × 心情冲击比例”，分别限制在 -1～1；即使瞬时情绪已饱和，心情仍按配置比例计算。迟到事件保留原始时间，先结算到当前时刻，再应用冲击，不追溯改写历史。
+
+`AgentState.emotion` 默认为 `None`，旧角色不会被自动赋予中性情绪。首次调用 `start_emotion_clock()` 必须显式提供当前时刻的 `EmotionState`；初始化只建立指定状态，不推算未知历史。初始化事件、状态、回执和第一条计划在同一事务保存。已有角色重启时省略 initial，找回当前游标的 pending 计划；不支持用重新初始化来热改基线或动力参数，也不自动重置 failed 计划。
+
+`application/emotion.py` 定义三个内部协议：
+
+- `SYSTEM.emotion_initialized`：显式配置初始状态，由启动入口提交。
+- `INTERNAL.emotion_tick`：自然回归计划，保存角色、旧游标和动力参数快照，使用 observed 来源。
+- `INTERNAL.emotion_impulse`：可信评价规则显式生成的情绪冲击，使用 inferred 来源并通过 causation_id 关联原事件。
+
+冲击事件 ID 由“角色 + 原事件 ID”稳定生成，每个角色对同一原事件最多施加一次冲击；同一 ID 的评价内容不能改写。原事件必须已记录，提交层核对关联及原时间。当前没有将任意聊天 payload 自动解释成冲击，也没有接入 DeepSeek 情绪评价。
+
+```text
+唯一 TimeScheduler → AgentRuntime → EventRouter → EmotionEventHandler
+  → EmotionEngine 计算候选快照
+  → PersonaStore 重算并校验提案
+  → 同一事务保存情绪、游标、回执及下一条计划
+```
+
+`StateChangeProposal.emotion_change` 为可选字段；普通需求或活动结算保留已有情绪。结算器检查旧情绪游标、角色版本及结算时间，拒绝通过普通更新修改基线/动力参数。应用层当前情绪协议只接受专用情绪提案，不接受混入额外需求变化；未来组合评价需显式扩展提交规则。
+
+冲击推进情绪游标后，从新游标保存下一条计划；旧 pending tick 到期时作为过期链忽略，不重复计算。同一时刻的多项冲击仍由角色版本检查及事件回执区分。需求时间游标、情绪时间游标和角色 updated_at 各自有独立含义，不相互消耗。下一条计划写入失败时，情绪与回执一起回滚；沿用运行时先行记录的原事件日志可能保留。
+
+下面的辅助函数加到已有组装过程：在启动 runtime/scheduler 前调用，共享同一 router 和 clock。与自主活动共用原唯一调度器即可，情绪事件由 `AutonomousActivityService.handle_event()` 交给运行时处理。
+
+```python
+from application.emotion import (
+    EMOTION_TICK_EVENT_TYPE, EMOTION_IMPULSE_EVENT_TYPE, EmotionEventHandler,
+)
+from persona.emotion import EmotionDynamics, EmotionState, VAD
+
+async def enable_emotion(storage, agent_id, router, clock):
+    handler = EmotionEventHandler(clock=clock)
+    router.register(EMOTION_TICK_EVENT_TYPE, handler)
+    router.register(EMOTION_IMPULSE_EVENT_TYPE, handler)
+    state = await storage.get_state(agent_id)
+    now = clock()
+    initial = None
+    if state.emotion is None:
+        neutral = VAD(valence=0, arousal=0, dominance=0)
+        initial = EmotionState(
+            current=neutral, mood=neutral, baseline=neutral, updated_at=now,
+            dynamics=EmotionDynamics(
+                emotion_half_life_seconds=300, mood_half_life_seconds=7200,
+                mood_impulse_ratio=0.1, tick_interval_seconds=60,
+            ),
+        )
+    await storage.start_emotion_clock(agent_id, now=now, initial=initial)
+```
+
+上述中点初始值与参数仅是示例，由宿主选择。可信规则评价出一次冲击后可显式提交：
+
+```python
+from application.emotion import build_emotion_impulse
+from persona.emotion import EmotionImpulse
+
+async def apply_evaluated_emotion(storage, runtime, original_event):
+    await storage.record_event(original_event)
+    event = build_emotion_impulse(
+        runtime.agent_id, original_event,
+        EmotionImpulse(valence=0.2, arousal=0.1, dominance=0),
+    )
+    return await runtime.submit(event)
+```
+
+当前阶段完成情绪自身的时间、事件与持久化闭环，情绪尚未调整活动效用，也不触发群消息。人格卡基线提取、情绪活动偏好和社交表达属于后续接线。没有新增数据库表或第三方依赖；旧 JSON 缺少 emotion/emotion_change 时按 None 加载，旧提案回执按模型默认值归一化比较。
+
 ### 4.2 活动执行系统
 
 - `ActivityManager`：选择与管理活动实例、进度、中断和恢复。
-- `ActivityRuntime`：管理生命周期、执行策略、能力检查与资源控制。
+- `ActivityService`：管理生命周期、执行策略、能力检查与资源控制。
 - `ActivityExecutor`：以模拟、真实或混合方式执行活动并反馈事件。
 
 活动定义与活动实例必须分离。同一种活动可以反复执行，每次实例独立记录阶段、进度、执行上下文及来源。暂停活动使用可恢复队列或轻量任务栈，保留暂停原因、有效性、恢复成本和相关承诺。
+
+#### 当前需求驱动的自主活动选择
+
+`activity/selection.py` 的 `ActivitySelector` 是纯规则选择器，输入活动定义目录与当前需求，返回选中定义及候选分数，不访问数据库、不调用模型。它是活动选择的第一步，完整 `BehaviorArbiter` 的社交、承诺、中断与权限仲裁尚未实现。
+
+`SelectionPolicy` 默认紧迫阈值为 60，四项权重均为 1；这些是可调整的示例参数，没有经过调优。精力与饱食度的压力为 `100 - value`，无聊度与社交需求的压力为 `value`。候选必须至少缓解一项达到阈值且权重非零的需求；净分数必须大于 0。分数为各项 `权重 × [(当前压力/100)² - (完成后压力/100)²]` 之和，完成后值先限制在 0～100。因此副作用会扣分，无法生效的溢出收益不计分。同分按定义 ID 排序，结果不依赖传入顺序。全零权重或没有正收益时保持空闲，不强制选活动。
+
+只有支持 simulated、预计时长已知且有完成需求效果的定义参与本轮选择。目录由宿主显式提供，执行器也必须预先注册。当前不自动读取 `config/activities.yaml`，不自动尝试真实或混合模式，不发送群消息。
+
+`application/autonomy.py` 的 `AutonomousActivityService` 负责接线：
+
+```text
+需求 tick → runtime.submit 等待结算 → 候选评分与统一仲裁 → 保存待开始实例 → ActivityService.start
+活动 tick → ActivityService 推进并结算完成收益 → 再次统一仲裁
+下一次需求 tick → 继续上述流程
+```
+
+任意 pending、running、paused 活动都占用角色，包括人工或非模拟活动；不会抢占、自动恢复暂停活动或接管人工 pending。已有多项活动时保持忙碌，由宿主处理历史冲突。
+
+`PersonaStore.reserve_behavior()` 在同一事务中检查全部活动（分页扫描历史）、读取最新需求、统一仲裁、创建 pending 实例、保存 `INTERNAL.activity_selected` 决策回执。回执记录角色版本、策略快照、满足紧迫条件的候选分数与 selected / no_candidate / busy / resume_pending 原因，并记录完整仲裁结果。它复用现有事件日志，不修改角色需求或版本，没有新增表或迁移。
+
+决策键生成稳定 ID。同一键的回执只消费一次，包括空闲与忙碌决定；重放读取原活动当前状态，不重新选择。活动启动在事务外，通过既有活动服务原子保存 running 状态与首个 tick。启动失败保留 pending，重试可继续；启动时调用 `recover()` 会接续自主选择产生的 pending，或为空闲角色做一次新决策。已运行活动沿用持久化 tick，暂停活动保持暂停。执行器配置错误会明确报错，需要修正配置后重试。
+
+每个角色应只有一个自主服务、运行时与调度器；人工活动控制也应由宿主协调，当前并未给所有历史人工创建接口增加全局单活动限制。需求时钟提供空闲后的再次检查；重试耗尽的活动 tick 仍按原规则失败，下个需求 tick 可再选择。未启用需求时钟时，不会额外创建持续空闲检查循环。
+
+以下示例面向已存在角色和已打开的 `PersonaStore`。数值与时长仅用于示范，社交活动为模拟过程，不代表对外发言：
+
+```python
+from datetime import datetime, timezone
+from activity.executors.simulated import SimulatedActivityExecutor
+from activity.manager import ActivityManager
+from activity.models import ActivityDefinition, ExecutionMode
+from activity.registry import ExecutorRegistry
+from activity.selection import ActivitySelector, SelectionPolicy
+from activity.service import ActivityService
+from application.autonomy import AutonomousActivityService
+from application.needs import NEEDS_TICK_EVENT_TYPE, NeedTickHandler
+from core.router import EventRouter
+from core.runtime import AgentRuntime
+from core.scheduler import TimeScheduler
+from persona.needs import NeedRates
+
+async def run_autonomous_agent(storage, agent_id, stop_event):
+    clock = lambda: datetime.now(timezone.utc)
+    definitions = tuple(ActivityDefinition(
+        definition_id=identifier, name=name, supported_modes=["simulated"],
+        estimated_duration_seconds=duration, completion_needs_delta=effect,
+    ) for identifier, name, duration, effect in (
+        ("rest", "休息", 600, {"energy": 35}),
+        ("eat", "进食", 300, {"satiety": 40}),
+        ("play", "娱乐", 300, {"boredom": -40, "energy": -5}),
+        ("social", "模拟社交", 300, {"social_need": -35, "energy": -5}),
+    ))
+    registry = ExecutorRegistry()
+    for definition in definitions:
+        registry.register(definition.definition_id, ExecutionMode.SIMULATED,
+                          SimulatedActivityExecutor())
+    activities = ActivityService(agent_id, storage, ActivityManager(registry), clock=clock)
+    selector = ActivitySelector(definitions, policy=SelectionPolicy())
+    router = EventRouter()
+    router.register(NEEDS_TICK_EVENT_TYPE, NeedTickHandler(clock=clock))
+    await storage.start_needs_clock(
+        agent_id, rates=NeedRates(energy=-4, satiety=-6, boredom=5, social_need=3), now=clock(),
+    )
+    async with AgentRuntime(agent_id, storage, router, clock=clock) as runtime:
+        autonomy = AutonomousActivityService(
+            agent_id, storage, selector, activities, runtime, clock=clock,
+        )
+        await autonomy.recover()
+        async with TimeScheduler(agent_id, storage, autonomy.handle_event, clock=clock):
+            await stop_event.wait()
+```
+
+该示例替换原来的单需求回调或活动分发回调，不为同一角色额外启动调度器。AstrBot 插件入口仍待接入，导入这些模块不会自动启动角色。
 
 ### 4.3 认知与记忆系统
 
@@ -198,7 +478,7 @@ restored = AgentEvent.model_validate_json(serialized)
 
 单进程内采用异步事件队列和一个逻辑状态写入者保证更新顺序。明确哪些事件可触发后续处理，并限制因果链深度，避免“情绪更新触发情绪更新”的循环。
 
-当前 `core/settlement.py` 已实现 `StateChangeProposal` 数据模型，`persona/needs.py` 已实现 `NeedDelta`。提案先支持四项需求变化：
+当前 `core/settlement.py` 已实现 `StateChangeProposal` 数据模型，`persona/needs.py` 已实现 `NeedDelta`。提案支持四项需求变化、需求时间推进及可选情绪变更：
 
 | 提案字段 | 含义 |
 | --- | --- |
@@ -206,7 +486,8 @@ restored = AgentEvent.model_validate_json(serialized)
 | `event_id` | 提案依据的事件 ID |
 | `agent_id` | 要改变状态的角色 ID |
 | `expected_version` | 提案基于的状态版本，必须明确提供非负整数 |
-| `needs_delta` | 四项需求的变化量，未填写项为 0，至少一项非零 |
+| `needs_delta` | 仍为必填字段；提供变化量时至少一项非零，仅推进时间或更新情绪时可显式为 `None` |
+| `needs_time` | 可选的自然需求时间窗口；旧游标必须匹配，首次 `from_at=None` 只建立基线 |
 
 ```python
 from core.settlement import StateChangeProposal
@@ -223,6 +504,8 @@ restored = StateChangeProposal.model_validate_json(proposal.model_dump_json())
 ```
 
 变化量只接受有限整数或浮点数，可正可负；它表示增减量，不是最终需求值，不受最终状态 0～100 的范围约束。比如 `energy=10` 表示精力增加 10，`social_need=-5` 表示社交需求降低 5。不同字段一增一减即使总和为 0，也属于有效变化。四项全为 0 则拒绝创建。
+
+`needs_delta=None` 时必须提供合法的 `needs_time` 或 `emotion_change`，不能构造完全无变化的空提案。首次建立时间基线不得同时携带需求变化量。普通活动效果不提供 `needs_time`，结算后保留原需求时间游标。
 
 提案与嵌套变化量均禁止字段重新赋值和未知字段。提案模型只进行格式校验与 JSON 转换；通过格式校验不代表可以提交。
 
@@ -241,12 +524,27 @@ restored = StateChangeProposal.model_validate_json(proposal.model_dump_json())
 | `AgentMismatchError` | 目标角色不一致，应检查提案路由 |
 | `StateVersionConflictError` | 状态版本不匹配，应重新读取状态并按策略重新计算 |
 | `SettlementTimeError` | 结算时间无效或发生倒退 |
+| `NeedTimeConflictError` | 提案的旧需求时间游标与当前状态不一致 |
 
-上述异常均继承 `SettlementError`。此函数只计算候选新状态，不保存内部状态，不检查事件存在性、权限或提案去重，不执行数据库事务。把同一份旧状态重复传入，仍能重复计算结果；版本检查不能替代持久化幂等机制。候选状态需通过 `SQLiteStorage.commit_proposal()` 完成去重、版本核对和原子提交后才能正式生效。单次变化幅度策略留待后续按活动规则配置。
+上述异常均继承 `SettlementError`。此函数只计算候选新状态，不保存内部状态，不检查事件存在性、权限或提案去重，不执行数据库事务。把同一份旧状态重复传入，仍能重复计算结果；版本检查不能替代持久化幂等机制。候选状态需通过应用层 `PersonaStore.commit_proposal()` 完成去重、版本核对和原子提交后才能正式生效。单次变化幅度策略留待后续按活动规则配置。
 
-### 5.4 SQLite 持久化与原子提交
+### 5.4 持久化分层与原子提交
 
-`infrastructure/storage.py` 已实现异步 `SQLiteStorage`，使用 `aiosqlite`。数据库父目录由调用方创建；通过 `async with SQLiteStorage(path)` 或显式 `open()` / `close()` 管理连接。
+`infrastructure/storage.py` 的 `SQLiteStorage` 只使用 `aiosqlite` 与通用持久化契约，负责连接、结构迁移、原始行读写和事务，不导入活动模块、核心模型或调度器，不解析业务 JSON。它提供 `open()`、`close()` 与 `transaction()`；事务会话提供带白名单的 `fetch_one()`、`fetch_all()`、`insert()` 和条件 `update()`。它返回受影响行数，不决定版本如何增长或活动如何结束。
+
+业务接口改由 `application/persistence.py` 的 `PersonaStore` 提供。`core/persistence.py` 负责事件去重、状态提案和通用投递规则；`activity/persistence.py` 负责活动修订校验、完成结算、后续计划与耗尽处理。应用层创建一个 `UnitOfWork` 事务，把同一会话交给两者，保证跨对象原子性。业务层没有 SQL，也不自行打开连接或提交事务。
+
+依赖方向为：应用层 → 核心/活动业务与持久化契约；SQLite 适配器 → 持久化契约。`persistence/ports.py` 的协议只传递原始行和查询条件，不导入任何业务模型。业务异常位于 `persistence/errors.py`。数据库父目录由调用方创建；组合根显式装配：
+
+```python
+from application.persistence import PersonaStore
+from infrastructure.storage import SQLiteStorage
+
+async with PersonaStore(SQLiteStorage(path)) as storage:
+    state = await storage.get_state("persona-001")
+```
+
+以下是 `PersonaStore` 的类型化业务接口，不能再直接调用 `SQLiteStorage` 上的同名旧接口：
 
 | 接口 | 作用 |
 | --- | --- |
@@ -256,8 +554,9 @@ restored = StateChangeProposal.model_validate_json(proposal.model_dump_json())
 | `get_event(event_id)` | 读取原事件，不存在返回 `None` |
 | `get_committed_proposal(agent_id, event_id)` | 读取已成功提交的原提案，不存在返回 `None`，供运行时跳过重复规则执行 |
 | `commit_proposal(proposal, settled_at=...)` | 从数据库读取当前状态，在事务中结算并保存结果 |
+| `start_needs_clock(agent_id, rates=..., now=..., interval_seconds=60)` | 建立或找回需求时钟计划，不重置已保存状态 |
 
-当前数据库包含五张表：`agent_states` 保存角色 ID、版本及最小状态 JSON；`agent_events` 保存事件 ID 与完整事件 JSON；`state_settlements` 保存角色需求结算；`activity_instances` 保存固定活动定义与最新实例；`activity_commits` 保存活动原修订对应的请求和结果。当前角色 JSON 状态仅包含最小需求模型，活动另表存储，后续复杂子系统仍按职责与查询需要拆表。
+当前数据库包含六张表：`agent_states` 保存角色 ID、版本及最小状态 JSON；`agent_events` 保存事件 ID 与完整事件 JSON；`state_settlements` 保存角色需求结算；`activity_instances` 保存固定活动定义与最新实例；`activity_commits` 保存活动原修订对应的请求和结果；`scheduled_events` 保存定时计划、状态与重试记录。当前角色 JSON 状态仅包含最小需求模型，活动和计划另表存储，后续复杂子系统仍按职责与查询需要拆表。
 
 一次新提案的提交顺序为：
 
@@ -278,7 +577,11 @@ COMMIT
 
 失败提案不会标记为已处理；修正后可按规则重试。成功提案的重试不再检查原预期版本或使用新的结算时间，因为没有执行新结算。已记录事件即使后续结算失败也会保留，事件记录与状态提交是两个独立事务。
 
-除上述冲突外，存储层会报告未打开连接、角色不存在或已存在、依据事件不存在等明确异常。数据库通过 `PRAGMA user_version` 标记结构版本，当前支持版本 2；首次初始化和版本 1 升级均在写事务中执行，保留旧角色、事件与结算记录，迁移失败时回滚表结构和版本号。其他非零版本拒绝打开，不自动降级。存储接口面向内部调用，尚不承担平台身份、作用域和操作权限检查，也不保证外部消息发送或游戏操作的原子性。
+除上述冲突外，业务提交层会报告未打开连接、角色不存在或已存在、依据事件不存在等明确异常。数据库通过 `PRAGMA user_version` 标记结构版本，当前为版本 3；首次初始化和版本 1/2 升级均在写事务中执行，保留旧角色、事件、结算和活动记录，迁移失败时回滚表结构和版本号。其他非零版本拒绝打开，不自动降级。存储接口面向内部调用，尚不承担平台身份、作用域和操作权限检查，也不保证外部消息发送或游戏操作的原子性。
+
+定时存储提供 `create_schedule()`、`get_schedule()`、`list_due_schedules()` 和 `record_schedule_delivery()`。投递结果通过旧尝试次数与 `pending` 状态条件更新，拒绝过期确认覆盖较新记录；已确认成功的计划可重复确认。到期查询使用角色、状态和下次尝试时间索引，时间统一保存为固定精度 UTC 文本。计划不存在、内容冲突或尝试次数冲突分别报告 `ScheduleNotFoundError`、`ScheduleConflictError` 和 `ScheduleVersionConflictError`。
+
+`PersonaStore.record_schedule_delivery()` 在同一事务中先调用核心投递规则，再按需调用活动耗尽规则；SQLite 适配器不知道 tick 的业务含义。`SQLiteStorage.open()` 只做连接和结构迁移。应用层 `PersonaStore.open()` 在适配器初始化后，调用独立的 `reconcile_exhausted_ticks()` 业务事务，分页修复仍指向相同运行修订的历史失败计划。修复失败会回滚业务修复并关闭连接；已经完成的结构迁移不回退，已结束或已换修订的活动不被覆盖。
 
 ## 6. 运行流程
 
@@ -404,7 +707,7 @@ instance = create_activity_instance(
 
 反馈事件显式标记 `provenance=simulated`，包含角色、定义、模式、状态、进度和修订号。事件 ID 由角色、活动实例、修订号和事件类型确定；同一输入与时间重复计算得到相同 ID。重复暂停之间经过恢复后修订号不同，因而能区分不同反馈。修订号现由活动提交接口用于数据库版本核对；仅计算出候选结果仍不能保证已经接受，必须通过提交接口。
 
-完成事件可携带定义中的 `needs_delta` 模板，取消或普通进度事件不携带完成效果。执行器只返回候选结果；当完成状态变化通过 `commit_activity_result()` 正式提交时，存储层会按固定定义自动结算完成需求效果。反馈尚未自动广播到其他认知模块；已结算的完成事件再次交给当前 `AgentRuntime` 时会复用原提案，不重复执行需求规则。
+完成事件可携带定义中的 `needs_delta` 模板，取消或普通进度事件不携带完成效果。执行器只返回候选结果；当完成状态变化通过 `commit_activity_result()` 正式提交时，业务提交层会按固定定义自动结算完成需求效果。反馈尚未自动广播到其他认知模块；已结算的完成事件再次交给当前 `AgentRuntime` 时会复用原提案，不重复执行需求规则。
 
 ```python
 from datetime import timedelta
@@ -455,7 +758,7 @@ progressed = await executor.step(ActivityContext(
 
 管理器还核对反馈中提供的定义、模式及修订号；模拟活动的活动与观察事件必须保留 `simulated` 来源。能力不支持、注册缺失或结果不合法时明确报错；执行器自身异常原样回传。结果检查发生在执行之后，不能撤销已经发生的外部操作，因此不能替代执行前的权限控制。
 
-结果校验现公开为纯校验方法 `ActivityManager.validate_result()`，管理器与存储提交层共同使用；存储层不调用执行器，只重新检查候选结果，避免绕过调用管理层提交不合法的变化。
+结果校验公开为纯校验方法 `ActivityManager.validate_result()`，管理器与 `ActivityPersistence` 共同使用；活动提交规则不调用执行器，只重新检查候选结果，避免绕过调用管理层提交不合法的变化。SQLite 适配器不导入管理器。
 
 ```python
 from activity.manager import ActivityManager
@@ -474,13 +777,13 @@ started = await manager.start(ActivityContext(
 
 `ActivityRecord` 在 `activity/models.py` 中组合 `definition` 与 `instance`，保存本次活动的固定规则快照及当前实例，检查定义关联和模式。活动执行期间不能以同定义 ID 的新规则替换原快照。
 
-`SQLiteStorage` 新增三个接口：
+`PersonaStore` 提供以下活动业务接口，并委托事务内的 `ActivityPersistence` 执行：
 
 | 接口 | 作用 |
 | --- | --- |
 | `create_activity(definition, instance)` | 首次保存待开始、修订 0、创建和更新时间一致的活动；要求角色已存在，实例 ID 全库唯一 |
 | `get_activity(agent_id, activity_id)` | 返回最新 `ActivityRecord`，不存在或角色不匹配返回 `None` |
-| `commit_activity_result(operation, context, result, settled_at=...)` | 原子保存活动、反馈、提交记录和已配置完成效果，返回当前活动记录；结算时间可省略 |
+| `commit_activity_result(operation, context, result, settled_at=..., next_schedule=..., trigger_event=...)` | 原子保存活动、反馈、提交记录和已配置完成效果；可选的下一次 tick 计划与触发事件共用事务 |
 | `settle_activity_completion(agent_id, activity_id, settled_at=...)` | 根据数据库完成证据补结算旧活动，安全重试返回当前角色状态 |
 
 提交顺序为：
@@ -517,7 +820,7 @@ saved = await storage.commit_activity_result("start", context, result)
 # 本例只是开始活动，尚无完成效果；正式提交完成时才结算已配置的需求变化。
 ```
 
-关闭重开后可按实例 ID 读回原规则与进度，并由调用方继续调用管理器；尚未实现自动查找并恢复全部活动、时钟调度或崩溃后待处理队列恢复。活动暂未加入 `AgentState` 的 JSON，读取角色状态不会自动包含活动实例。
+关闭重开后可按实例 ID 读回原规则与进度，并由调用方继续调用管理器。通过 7.6 入口启动的模拟活动还会保存下一次 tick，可由调度器在重启后继续处理；旧接口手动创建且没有计划的活动不会自动接管，也未实现全活动扫描或运行时内存队列恢复。活动暂未加入 `AgentState` 的 JSON，读取角色状态不会自动包含活动实例。
 
 ### 7.5 完成需求效果与旧活动补结算
 
@@ -525,7 +828,7 @@ saved = await storage.commit_activity_result("start", context, result)
 
 完成证据必须满足：实例确为 `completed`；完成提交记录与当前实例一致；记录中恰有一个 `ACTIVITY.completed` 事件且与事件日志一致；事件的活动、角色、定义、模式、状态、进度和修订均匹配；事件时间位于活动创建与更新时间之间。模拟模式要求 `simulated` 来源，真实与混合模式要求 `observed` 来源。来源标记校验属于内部一致性约束，不能替代真实环境适配器的授权与事实采集。
 
-存储层在同一个写事务中提交活动变化、事件、活动提交记录、角色需求与需求提案记录。任一步失败均回滚；沿用 `settle_state()` 的角色版本递增和 0～100 限幅。角色结算部分复用不另开事务的 `_commit_proposal()`，避免嵌套事务与重复取锁。
+应用层在同一个写事务中提交活动变化、事件、活动提交记录、角色需求与需求提案记录。任一步失败均回滚；沿用 `settle_state()` 的角色版本递增和 0～100 限幅。`ActivityPersistence` 调用共享当前会话的 `CorePersistence.commit_proposal()`，两者都不另开事务，避免重复取锁。
 
 首次结算时间默认采用完成实例的 `updated_at`，也可显式传入较晚的 `settled_at`；时间必须带时区，且不能早于活动完成记录或角色当前更新时间。若角色在迟到的活动结果之前已经更新，需要提供合适的提交时间，失败时不会留下部分活动或收益。
 
@@ -541,7 +844,66 @@ role = await storage.settle_activity_completion(
 )
 ```
 
-补结算从数据库读取原证据，不接受外部随意传入的奖励值；并发或重复调用不会重复增加效果。没有完成提交证据、未完成或已取消的活动会拒绝。此步骤复用已有 v2 表结构，不需要新迁移，也不会自动扫描和补发全部历史活动。
+补结算从数据库读取原证据，不接受外部随意传入的奖励值；并发或重复调用不会重复增加效果。没有完成提交证据、未完成或已取消的活动会拒绝。完成效果复用已有活动及需求结算表，不会自动扫描和补发全部历史活动；当前结构版本见持久化章节。
+
+### 7.6 模拟活动服务与自动推进
+
+`activity/service.py` 的 `ActivityService` 将活动读取、执行器调用、结果提交和下一次时间计划连接起来。它绑定单个角色，只允许 `simulated` 模式，提供 `start_activity()`、`pause_activity()`、`resume_activity()`、`stop_activity()` 和 `handle_event()`。活动定义、待开始实例和对应执行器必须预先创建、保存并注册。
+
+`ActivityService` 不拥有后台循环或独立启停生命周期；`core/runtime.py` 的 `AgentRuntime` 继续负责角色事件队列和工作任务。内部 tick 的 `source="activity.runtime"` 是已有持久化事件的协议标识，保留原值以兼容旧计划，不随 Python 文件名修改。
+
+`activity/ticks.py` 定义内部事件 `INTERNAL.activity_tick`，其 payload 使用严格的 `ActivityTick` 模型：角色 ID、预期活动修订 `expected_revision` 和推进间隔 `interval_seconds`。间隔默认为 5 秒，可配置 0.001～86400 秒。间隔随计划保存，重启后处理原计划时沿用原间隔；恢复暂停活动时使用当前入口配置。
+
+`build_activity_tick()` 为运行中的模拟实例生成稳定 ID 的下一次单次计划；ID 由角色、活动实例和当前修订确定，末次等待缩短至剩余模拟时长，并保证到期时间至少增加一微秒。tick 的 `observed` 来源表示内部时钟触发，不证明活动在真实环境中发生；执行器的活动反馈仍保留 `simulated`。
+
+```text
+start_activity / resume_activity
+  → 读取固定定义和最新实例 → ActivityManager → 候选运行实例
+  → 同一事务保存实例、反馈、提交记录和下一次 tick
+
+TimeScheduler 到期投递 → ActivityService.handle_event
+  → 核对角色、持久化计划、事件内容、时间与活动修订
+  → 旧修订：只记录事件，返回最新活动，不推进或再发效果
+  → 未来修订：拒绝，不冒充已完成
+  → 当前运行修订：step → 原子保存变化及下一次 tick
+      → 完成：同事务结算需求效果，不再建立新计划
+```
+
+自动推进使用处理时的当前时间。运行期间异常退出后，到期计划仍可恢复；停机期间的时间计入模拟运行，长时间逾期可能一次推进就完成。暂停期间不计时，恢复操作保留进度并产生新修订。暂停、取消或完成时不创建后续计划；此前的 pending tick 留待到期后作为旧修订正常确认，不等同于提供通用计划取消功能。
+
+活动服务使用实例内异步锁串行协调控制操作与 tick。重复 tick 或成功确认失败后的重投会遇到旧修订，不能重复推进；新计划与新实例共用事务，避免保存活动后遗漏后续唤醒。下一次计划创建冲突或失败、反馈写入失败、完成结算失败，均回滚本次活动变化；重试仍依据原持久化计划。到期执行器若不产生新修订，服务会报错并交给调度器重试，避免误确认后失去推进计划。
+
+重试耗尽采用明确失败结束的规则：最后一次失败确认时，应用层协调 `ActivityPersistence` 核对计划、角色、实例、模式与当前修订；只有仍匹配当前运行实例的正规 tick，才会将活动改为 `failed`、修订加 1，保留最后确认的进度，不推断已完成或发放完成效果。`build_tick_exhaustion_result()` 是该转换的纯规则函数，生成稳定 ID 的 `ACTIVITY.failed` 反馈，包含 `reason=tick_attempts_exhausted`、计划 ID、尝试次数与最后错误，并关联原 tick。
+
+最终计划状态、次数、原 tick、失败活动、失败反馈和活动提交记录共用事务。任何写入失败都会回滚最后一次尝试记录及活动转换，计划仍保持前一次的 `pending` 状态，后续可以重试；若第三次投递成功，则仍按成功处理，不提前终结活动。若旧 tick 对应活动已暂停、结束或推进到新修订，只记录计划失败，不覆盖较新活动。
+
+应用层 `PersonaStore.open()` 会修复旧版本遗留的“当前 tick 已 failed，活动仍 running”数据；直接打开 SQLite 适配器不会执行活动规则。修复使用原最终失败时间，重复应用启动不会重复增加活动修订或反馈。失败活动是终态，需要重新尝试时创建新活动实例；当前不自动重置失败计划，也不采用无限重试。
+
+`PersonaStore.commit_activity_result()` 的计划及触发事件参数是可选的。提供下一次计划时，由活动业务规则重新核对候选实例与计划；提供触发 tick 时，还核对原活动快照、原持久化计划和推进间隔。相同提交重试必须保留这两个可选参数，不能切换成不同的提交内容。自动管理的活动应通过 `ActivityService` 控制；绕过入口直接推进实例却不保存下一次计划，可能使旧 tick 过期后失去自动推进链。`ActivityService` 只依赖 `activity/ports.py` 的 `ActivityStore` 协议。数据库仍为 v3 六张表；需求时钟新增的可选 JSON 字段可兼容旧记录，无需批量数据迁移或新增依赖。
+
+活动执行含数据库副作用，不能把 `handle_event` 注册成只计算提案的 `EventRouter` 处理函数。仅投递活动 tick 时，可以直接将它作为调度回调；同一角色还有其他定时事件时，应使用一个调度器，在回调入口分发：
+
+```python
+from activity.service import ActivityService
+from activity.ticks import TICK_EVENT_TYPE
+from core.scheduler import TimeScheduler
+
+# storage 已打开，agent_id 的角色和 activity-001 已保存；manager 已注册执行器。
+# runtime 为该角色已经启动的 AgentRuntime。
+activities = ActivityService(agent_id, storage, manager, tick_interval_seconds=5)
+
+async def deliver(event):
+    if event.event_type == TICK_EVENT_TYPE:
+        return await activities.handle_event(event)
+    return await runtime.submit(event)
+
+await activities.start_activity("activity-001")
+async with TimeScheduler(agent_id, storage, deliver):
+    # 在应用自身运行期间保持调度器存活；此处仅示意生命周期。
+    await application_shutdown_event.wait()
+```
+
+每个角色仅部署一个活动服务和一个调度器；不同实例间仍依赖数据库冲突检查，没有多实例执行租约。当前不自动选择活动、不限制同角色只能有一个运行活动，也不处理抢占栈、资源占用、真实权限、失败计划重置、反馈广播或 AstrBot 生命周期接入。真实与混合模式需在事实采集、幂等与权限机制完备后另行接入。
 
 ## 8. 数据与记忆
 
@@ -562,6 +924,7 @@ AgentState
 | `agent_id` | 必填角色 ID，禁止空白或首尾空格 |
 | `needs` | 必填的四项需求状态，所有初始值必须明确提供 |
 | `updated_at` | 必填的带时区更新时间，保存为 UTC；加载时不重置 |
+| `needs_updated_at` | 独立的自然需求时间游标，默认 `None` 表示尚未建立基线 |
 | `version` | 非负整数状态修订号，初始默认 0；后续由结算器成功提交时递增 |
 
 需求值采用 0～100 的统一刻度，接受整数和浮点数；精力 `energy`、饱食度 `satiety` 越高越充足，无聊度 `boredom`、社交需求 `social_need` 越高越需要满足。模型拒绝越界值、非有限数值、布尔值和数值字符串，不静默截断。初始值、变化速率与行为阈值由后续配置及策略确定。
@@ -593,7 +956,7 @@ new_state = settle_state(
     settled_at=state.updated_at,  # 示例使用相同时间；运行时由调用方提供结算时刻
 )
 # 本例精力从 40 变为 50，社交需求从 50 变为 45，版本从 0 变为 1。
-# 原 state 保持不变；new_state 尚未持久化。运行时应通过存储层提交提案。
+# 原 state 保持不变；new_state 尚未持久化。运行时应通过业务提交层提交提案。
 ```
 
 数据库分别存储这些逻辑实体，所有角色数据预留 `agent_id`。活动按实例隔离；关系按角色、平台、群与用户身份管理。跨群身份关联不自动扩大权限或记忆可见范围。
@@ -613,7 +976,7 @@ new_state = settle_state(
 
 ## 9. 工程目录
 
-以下目录已建立，各包包含 `__init__.py`。当前已实现基础模型、内存结算、SQLite 角色与活动持久化、事件路由、单角色运行时、执行器协议、模拟执行器与活动调用管理，其余业务模块仍为职责占位。`ActivityRuntime`、`StateCoordinator` 和 `ResponseGenerator` 是逻辑组件，具体文件归属可在不改变职责边界的前提下细化。
+以下目录已建立，各包包含 `__init__.py`。当前已实现基础模型、内存结算、SQLite 角色与活动持久化、事件路由、单角色运行时、执行器协议、模拟执行器、活动调用管理和模拟活动服务，其余业务模块仍为职责占位。`ActivityService` 位于 `activity/service.py`；`StateCoordinator` 和 `ResponseGenerator` 是逻辑组件，具体文件归属可在不改变职责边界的前提下细化。
 
 当前项目根目录为 `persona_agent/`；`metadata.yaml` 中的 `name: astrbot_plugin_persona` 是插件标识，两者含义不同。
 
@@ -630,19 +993,25 @@ persona_agent/
 │   ├── runtime.py               # 单角色队列与生命周期编排
 │   ├── events.py                # 统一事件
 │   ├── state.py                 # 最小角色状态
+│   ├── ports.py                 # 核心运行时的类型化存储协议
+│   ├── persistence.py           # 状态、事件、提案与投递的事务内规则
 │   ├── router.py                # 精确事件路由与处理结果校验
 │   ├── arbiter.py
-│   ├── scheduler.py
+│   ├── scheduler.py             # 持久化单次定时事件与重试投递
 │   └── settlement.py            # 提案模型与内存结算
 ├── persona/
 │   ├── profile.py
 │   ├── emotion.py
-│   ├── needs.py
+│   ├── needs.py                 # 需求模型、自然速率与纯 NeedEngine
 │   └── relationship.py
 ├── activity/
 │   ├── models.py               # 活动定义、实例与模式状态枚举
 │   ├── rewards.py              # 固定定义的完成效果提案规则
 │   ├── manager.py              # 生命周期编排、能力与结果检查
+│   ├── service.py              # 模拟活动控制与持久化自动推进
+│   ├── ports.py                # 活动服务的业务提交协议
+│   ├── persistence.py          # 活动修订、完成结算与 tick 耗尽规则
+│   ├── ticks.py                # 内部推进事件与稳定单次计划
 │   ├── selector.py
 │   ├── interrupt.py
 │   ├── executor.py
@@ -665,8 +1034,15 @@ persona_agent/
 │   ├── policy.py
 │   ├── expression.py
 │   └── commitment.py
+├── application/
+│   ├── needs.py                 # 需求 tick、提案处理器与计划构造
+│   └── persistence.py           # PersonaStore：跨业务事务协调与启动修复
+├── persistence/
+│   ├── ports.py                 # 通用行操作与 UnitOfWork 契约
+│   ├── errors.py                # 共享持久化契约异常
+│   └── serialization.py         # 无业务依赖的序列化辅助
 ├── infrastructure/
-│   ├── storage.py               # SQLite 状态、事件与事务结算
+│   ├── storage.py               # SQLite 连接、schema 迁移与原始行事务
 │   ├── outbox.py
 │   ├── permissions.py
 │   └── observability.py
@@ -687,7 +1063,11 @@ persona_agent/
     ├── test_simulated_executor.py # 模拟执行器与协议测试
     ├── test_activity_manager.py # 注册与活动编排测试
     ├── test_activity_storage.py # 活动事务保存与数据库迁移测试
-    └── test_activity_rewards.py # 完成效果、补结算与原子性测试
+    ├── test_activity_rewards.py # 完成效果、补结算与原子性测试
+    ├── test_scheduler.py       # 定时投递、恢复、重试与 v3 迁移测试
+    ├── test_activity_service.py # 模拟活动自动推进、恢复与原子性测试
+    ├── test_persistence_layers.py # 依赖方向、独立适配器及内存替换测试
+    └── test_need_engine.py      # 需求时间推进、重复处理与事务回滚
 ```
 
 `metadata.yaml` 是元信息草稿，作者与仓库地址待补齐；`_conf_schema.json` 与三个 YAML 配置暂为空映射，具体字段随接口设计确定。事件模块依赖已记录于 `requirements.txt`，手动测试步骤见 [tests/README.md](tests/README.md)；插件安装流程待接入 AstrBot 后补充。

@@ -1,4 +1,4 @@
-"""活动持久化、原子反馈与 v1→v2 迁移测试，由开发者手动运行。"""
+"""活动业务提交、原子反馈与结构迁移测试，由开发者手动运行。"""
 
 import asyncio
 import sqlite3
@@ -19,10 +19,16 @@ from activity.registry import ExecutorRegistry
 from core.events import AgentEvent
 from core.settlement import StateChangeProposal
 from core.state import AgentState
-from infrastructure.storage import (
-    ActivityAlreadyExistsError, ActivityCommitConflictError, ActivityDefinitionConflictError,
-    ActivityNotFoundError, ActivityVersionConflictError, EventConflictError,
-    SQLiteStorage, StateNotFoundError,
+from infrastructure.storage import SQLiteStorage
+from application.persistence import PersonaStore
+from persistence.errors import (
+    ActivityAlreadyExistsError,
+    ActivityCommitConflictError,
+    ActivityDefinitionConflictError,
+    ActivityNotFoundError,
+    ActivityVersionConflictError,
+    EventConflictError,
+    StateNotFoundError,
 )
 from persona.needs import NeedState
 
@@ -31,7 +37,7 @@ class ActivityStorageTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.directory = TemporaryDirectory()
         self.path = Path(self.directory.name) / "agent.sqlite3"
-        self.storage = SQLiteStorage(self.path)
+        self.storage = PersonaStore(SQLiteStorage(self.path))
         await self.storage.open()
         self.time = datetime(2026, 10, 31, 12, 0, tzinfo=timezone.utc)
         self.state = AgentState(
@@ -219,7 +225,7 @@ class ActivityStorageTests(unittest.IsolatedAsyncioTestCase):
         first_context, second_context = self.context(), self.context(seconds=1)
         first = await self.manager.start(first_context)
         second = await self.manager.start(second_context)
-        async with SQLiteStorage(self.path) as other:
+        async with PersonaStore(SQLiteStorage(self.path)) as other:
             results = await asyncio.gather(
                 self.storage.commit_activity_result("start", first_context, first),
                 other.commit_activity_result("start", second_context, second),
@@ -241,8 +247,9 @@ class ActivityStorageTests(unittest.IsolatedAsyncioTestCase):
         await self.storage.record_event(event)
         expected_state = await self.storage.commit_proposal(proposal, settled_at=self.time)
         await self.storage.close()
-        # v2 只增加这两张表；移除它们后得到保留旧数据的 v1 结构。
+        # 移除后续版本增加的表，保留已有数据，模拟真正的 v1 结构。
         with closing(sqlite3.connect(self.path)) as connection:
+            connection.execute("DROP TABLE scheduled_events")
             connection.execute("DROP TABLE activity_commits")
             connection.execute("DROP TABLE activity_instances")
             connection.execute("PRAGMA user_version = 1")
@@ -253,11 +260,12 @@ class ActivityStorageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.storage.get_committed_proposal(self.state.agent_id, event.event_id), proposal)
         await self.storage.create_activity(self.definition, self.initial)
         with closing(sqlite3.connect(self.path)) as connection:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 2)
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 3)
 
     async def test_failed_migration_rolls_back_schema_and_version(self):
         await self.storage.close()
         with closing(sqlite3.connect(self.path)) as connection:
+            connection.execute("DROP TABLE scheduled_events")
             connection.execute("DROP TABLE activity_commits")
             connection.execute("DROP TABLE activity_instances")
             connection.execute("PRAGMA user_version = 1")

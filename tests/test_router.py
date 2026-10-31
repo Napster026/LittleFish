@@ -15,6 +15,7 @@ from core.router import (
 from core.settlement import StateChangeProposal
 from core.state import AgentState
 from infrastructure.storage import SQLiteStorage
+from application.persistence import PersonaStore
 from persona.needs import NeedState
 
 
@@ -147,7 +148,7 @@ class EventRouterTests(unittest.IsolatedAsyncioTestCase):
     async def test_event_can_be_routed_and_committed(self):
         self.router.register("ACTIVITY.completed", self.handle_rest)
         with TemporaryDirectory() as directory:
-            async with SQLiteStorage(Path(directory) / "agent.sqlite3") as storage:
+            async with PersonaStore(SQLiteStorage(Path(directory) / "agent.sqlite3")) as storage:
                 await storage.create_state(self.state)
                 await storage.record_event(self.event)
                 current = await storage.get_state(self.state.agent_id)

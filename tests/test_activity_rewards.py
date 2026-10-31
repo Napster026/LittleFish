@@ -25,7 +25,11 @@ from core.router import EventRouter
 from core.runtime import AgentRuntime
 from core.settlement import SettlementTimeError, StateChangeProposal
 from core.state import AgentState
-from infrastructure.storage import ProposalConflictError, SQLiteStorage
+from infrastructure.storage import SQLiteStorage
+from application.persistence import PersonaStore
+from persistence.errors import (
+    ProposalConflictError,
+)
 from persona.needs import NeedState
 
 
@@ -33,7 +37,7 @@ class ActivityRewardTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.directory = TemporaryDirectory()
         self.path = Path(self.directory.name) / "agent.sqlite3"
-        self.storage = SQLiteStorage(self.path)
+        self.storage = PersonaStore(SQLiteStorage(self.path))
         await self.storage.open()
         self.time = datetime(2026, 10, 31, 12, 0, tzinfo=timezone.utc)
         self.state = AgentState(
@@ -267,7 +271,7 @@ class ActivityRewardTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_two_connections_backfill_effect_only_once(self):
         await self.legacy_unpaid()
-        async with SQLiteStorage(self.path) as other:
+        async with PersonaStore(SQLiteStorage(self.path)) as other:
             results = await asyncio.gather(
                 self.storage.settle_activity_completion(
                     self.state.agent_id, self.initial.activity_id, settled_at=self.time + timedelta(seconds=20),
