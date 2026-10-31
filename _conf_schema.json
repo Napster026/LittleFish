@@ -1,1 +1,267 @@
-{}
+{
+  "agent_id": {
+    "description": "角色 ID（修改会创建另一角色，不迁移旧状态）",
+    "type": "string",
+    "default": "persona-001"
+  },
+  "autonomous_enabled": {
+    "description": "允许自主启动新活动",
+    "type": "bool",
+    "default": true
+  },
+  "disabled_activities": {
+    "description": "禁用的活动定义 ID",
+    "type": "list",
+    "default": []
+  },
+  "qq_group_ids": {
+    "description": "接收消息的 QQ 群 ID",
+    "type": "list",
+    "default": [],
+    "hint": "先用管理员命令 /persona_scope 查看 group_id。空列表不记录群消息。"
+  },
+  "qq_private_ids": {
+    "description": "接收消息的 QQ 私聊用户 ID",
+    "type": "list",
+    "default": [],
+    "hint": "使用字符串 ID；空列表不记录私聊消息。"
+  },
+  "qq_platform_ids": {
+    "description": "允许的 QQ 平台实例 ID",
+    "type": "list",
+    "default": [],
+    "hint": "空列表允许受支持 QQ 适配器实例；可从 /persona_scope 复制 platform_id。"
+  },
+  "simulation": {
+    "description": "角色与模拟参数（示例值，尚未调优）",
+    "type": "dict",
+    "default": {
+      "initial_needs": {
+        "energy": 40,
+        "satiety": 70,
+        "boredom": 30,
+        "social_need": 50
+      },
+      "need_rates": {
+        "energy": -4,
+        "satiety": -6,
+        "boredom": 5,
+        "social_need": 3
+      },
+      "needs_interval_seconds": 60,
+      "activity_interval_seconds": 5,
+      "initial_emotion": {
+        "current": {
+          "valence": 0,
+          "arousal": 0,
+          "dominance": 0
+        },
+        "mood": {
+          "valence": 0,
+          "arousal": 0,
+          "dominance": 0
+        },
+        "baseline": {
+          "valence": 0,
+          "arousal": 0,
+          "dominance": 0
+        },
+        "dynamics": {
+          "emotion_half_life_seconds": 300,
+          "mood_half_life_seconds": 7200,
+          "mood_impulse_ratio": 0.1,
+          "tick_interval_seconds": 60
+        }
+      },
+      "activities": [
+        {
+          "definition_id": "rest",
+          "name": "休息",
+          "supported_modes": [
+            "simulated"
+          ],
+          "estimated_duration_seconds": 600,
+          "completion_needs_delta": {
+            "energy": 35
+          }
+        },
+        {
+          "definition_id": "eat",
+          "name": "进食",
+          "supported_modes": [
+            "simulated"
+          ],
+          "estimated_duration_seconds": 300,
+          "completion_needs_delta": {
+            "satiety": 40
+          }
+        },
+        {
+          "definition_id": "play",
+          "name": "娱乐",
+          "supported_modes": [
+            "simulated"
+          ],
+          "estimated_duration_seconds": 300,
+          "completion_needs_delta": {
+            "boredom": -40,
+            "energy": -5
+          }
+        },
+        {
+          "definition_id": "social",
+          "name": "模拟社交",
+          "supported_modes": [
+            "simulated"
+          ],
+          "estimated_duration_seconds": 300,
+          "completion_needs_delta": {
+            "social_need": -35,
+            "energy": -5
+          }
+        }
+      ],
+      "selection_policy": {
+        "urgency_threshold": 60,
+        "energy": 1,
+        "satiety": 1,
+        "boredom": 1,
+        "social_need": 1
+      },
+      "emotion_policy": {
+        "max_adjustment": 0,
+        "max_relative_adjustment": 0.5,
+        "current_weight": 1
+      },
+      "emotion_preferences": []
+    },
+    "hint": "初始值只在首次创建时使用。已有时钟的速率、基线和动力参数不支持直接切换；修改目录和偏好后重载插件。"
+  },
+  "evaluation": {
+    "description": "本地规则评价（无额外模型调用）",
+    "type": "dict",
+    "default": {
+      "enabled": true,
+      "activity_feedback_enabled": true,
+      "cooldown_seconds": 30,
+      "max_axis_delta": 0.1,
+      "max_message_chars": 2000,
+      "chat_rules": [
+        {
+          "rule_id": "thanks",
+          "phrases": [
+            "谢谢你",
+            "感谢你",
+            "多谢你",
+            "辛苦你了"
+          ],
+          "impulse": {
+            "valence": 0.03,
+            "arousal": -0.01,
+            "dominance": 0.01
+          },
+          "priority": 20
+        },
+        {
+          "rule_id": "praise",
+          "phrases": [
+            "你真棒",
+            "你很棒",
+            "你真厉害",
+            "你很好"
+          ],
+          "impulse": {
+            "valence": 0.05,
+            "arousal": 0.02,
+            "dominance": 0.02
+          },
+          "priority": 30
+        },
+        {
+          "rule_id": "insult",
+          "phrases": [
+            "你是笨蛋",
+            "你这个笨蛋",
+            "你真没用",
+            "你是废物",
+            "讨厌你"
+          ],
+          "impulse": {
+            "valence": -0.05,
+            "arousal": 0.03,
+            "dominance": -0.02
+          },
+          "priority": 40
+        },
+        {
+          "rule_id": "apology",
+          "phrases": [
+            "对不起",
+            "抱歉"
+          ],
+          "impulse": {
+            "valence": 0.02,
+            "arousal": -0.02,
+            "dominance": 0.01
+          },
+          "priority": 25
+        },
+        {
+          "rule_id": "invitation",
+          "phrases": [
+            "一起聊聊",
+            "陪我聊聊",
+            "和我聊天"
+          ],
+          "impulse": {
+            "valence": 0.02,
+            "arousal": 0.02,
+            "dominance": 0
+          },
+          "priority": 10
+        },
+        {
+          "rule_id": "friendly_emoji",
+          "phrases": [
+            "😊",
+            "🥰"
+          ],
+          "impulse": {
+            "valence": 0.015,
+            "arousal": 0,
+            "dominance": 0
+          },
+          "priority": 1
+        }
+      ],
+      "activity_effects": {
+        "stage_success": {
+          "valence": 0.03,
+          "arousal": 0,
+          "dominance": 0.02
+        },
+        "interesting_content": {
+          "valence": 0.06,
+          "arousal": 0.03,
+          "dominance": 0
+        },
+        "stage_failure": {
+          "valence": -0.04,
+          "arousal": 0.02,
+          "dominance": -0.02
+        },
+        "activity_completed": {
+          "valence": 0.04,
+          "arousal": -0.01,
+          "dominance": 0.02
+        },
+        "activity_failed": {
+          "valence": -0.06,
+          "arousal": 0.03,
+          "dominance": -0.03
+        }
+      }
+    },
+    "hint": "聊天短语和活动语义由本地规则映射为有界情绪冲击。群聊需明确指向角色；相同内容冷却跨重载保留。无需提供者 ID 或 API Key。保存后重载。"
+  }
+}
