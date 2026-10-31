@@ -44,8 +44,8 @@ class ActivityManager:
     """统一选择、调用执行器并核对候选结果，不缓存或持久化实例。
 
     调用方必须提供最新上下文，本层不负责活动选择、任务栈、自动调度或收益
-    提交。真实操作的权限与资源控制仍需后续 ActivityRuntime 接入；这里的
-    返回结果检查不能撤销已经发生的外部操作。
+    提交。真实操作的权限与资源控制仍待接入；当前 ActivityService 只自动
+    驱动模拟模式。这里的返回结果检查不能撤销已经发生的外部操作。
     """
 
     def __init__(self, registry: ExecutorRegistry):
@@ -86,7 +86,7 @@ class ActivityManager:
     def validate_result(
         operation: str, context: ActivityContext, result: ActivityExecutionResult
     ) -> None:
-        """检查已通过模型校验的候选结果，供调用层与存储提交层共同使用。"""
+        """检查已通过模型校验的候选结果，供管理器与活动持久化规则共同使用。"""
         if operation not in {"start", "step", "observe", "pause", "resume", "stop"}:
             raise InvalidExecutorResultError("该操作不支持提交活动结果")
         expected = _INPUT_STATUS.get(operation)

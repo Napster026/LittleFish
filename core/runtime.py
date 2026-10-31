@@ -8,9 +8,10 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from core.events import AgentEvent
+from core.ports import AgentStore
 from core.router import EventRouter
 from core.state import AgentState
-from infrastructure.storage import SQLiteStorage, StateNotFoundError
+from persistence.errors import StateNotFoundError
 
 
 class AgentRuntimeError(RuntimeError):
@@ -52,7 +53,7 @@ class AgentRuntime:
     def __init__(
         self,
         agent_id: str,
-        storage: SQLiteStorage,
+        storage: AgentStore,
         router: EventRouter,
         *,
         max_pending: int = 100,
