@@ -1,13 +1,14 @@
-"""最小角色状态模型，后续按功能逐步加入人格、情绪、活动等状态。"""
+"""角色需求与可选情绪快照，状态变化通过统一提案结算。"""
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Annotated, Any
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StrictStr, field_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StrictStr, field_validator, model_validator
 
-from persona.needs import NeedState
+from persona.needs import NeedState, parse_need_time
+from persona.emotion import EmotionState
 
 
 # noinspection PyNestedDecorators
@@ -17,6 +18,8 @@ class AgentState(BaseModel):
     version 是该角色的状态修订号，不是插件版本或协议版本。初始为 0，
     后续由结算器在成功提交时递增；本模型不自动递增或执行并发检查。
     updated_at 表示本次状态的更新时间，必须显式提供，不在加载时重置。
+    needs_updated_at 是独立的自然需求时间游标；None 表示尚未建立基线。
+    emotion 为可选情绪状态，含独立游标与规则；None 表示未显式启用。
     模型只负责校验和序列化，不写数据库，也不计算需求变化。
     """
 
@@ -26,6 +29,21 @@ class AgentState(BaseModel):
     needs: NeedState
     updated_at: AwareDatetime
     version: Annotated[int, Field(strict=True, ge=0)] = 0
+    needs_updated_at: AwareDatetime | None = None
+    emotion: EmotionState | None = None
+
+    @field_validator("needs_updated_at", mode="before")
+    @classmethod
+    def parse_needs_updated_at(cls, value: Any) -> datetime | None:
+        return parse_need_time(value)
+
+    @model_validator(mode="after")
+    def validate_needs_time(self) -> AgentState:
+        if self.needs_updated_at is not None and self.needs_updated_at > self.updated_at:
+            raise ValueError("需求时间游标不能晚于角色更新时间")
+        if self.emotion is not None and self.emotion.updated_at > self.updated_at:
+            raise ValueError("情绪时间游标不能晚于角色更新时间")
+        return self
 
     @field_validator("agent_id")
     @classmethod
