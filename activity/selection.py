@@ -1,12 +1,14 @@
-"""需求驱动的纯活动选择；不启动执行器或修改角色状态。"""
+"""需求驱动、可选情绪偏好的纯活动选择；不执行或修改角色状态。"""
 
 from dataclasses import dataclass
 from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from activity.models import ActivityDefinition, ExecutionMode
-from persona.needs import NEED_NAMES, NeedState
+from .models import ActivityDefinition, ExecutionMode
+from .emotion_preferences import ActivityEmotionPreference, EmotionPreferencePolicy
+from ..persona.emotion import EmotionState, VAD_NAMES
+from ..persona.needs import NEED_NAMES, NeedState
 
 
 class SelectionPolicy(BaseModel):
@@ -39,6 +41,11 @@ class ActivityEvaluation:
     score: float
     eligible: bool
     reason: str | None = None
+    emotion_adjustment: float = 0.0
+
+    @property
+    def final_score(self) -> float:
+        return self.score + self.emotion_adjustment
 
 
 class ActivitySelector:
@@ -49,16 +56,38 @@ class ActivitySelector:
     有更高边际收益；副作用与边界按实际可生效数值计入。
     """
 
-    def __init__(self, definitions: tuple[ActivityDefinition, ...], *, policy: SelectionPolicy | None = None):
+    def __init__(
+        self, definitions: tuple[ActivityDefinition, ...], *, policy: SelectionPolicy | None = None,
+        emotion_policy: EmotionPreferencePolicy | None = None,
+        emotion_preferences: tuple[ActivityEmotionPreference, ...] = (),
+    ):
         self.policy = SelectionPolicy.model_validate((policy or SelectionPolicy()).model_dump())
         copies = tuple(ActivityDefinition.model_validate(d.model_dump()) for d in definitions)
         if len({d.definition_id for d in copies}) != len(copies):
             raise ValueError("候选活动定义 ID 不能重复")
         self.definitions = tuple(sorted(copies, key=lambda d: d.definition_id))
+        self.emotion_policy = EmotionPreferencePolicy.model_validate(
+            (emotion_policy or EmotionPreferencePolicy()).model_dump(),
+        )
+        preferences = tuple(ActivityEmotionPreference.model_validate(p.model_dump()) for p in emotion_preferences)
+        ids = [p.definition_id for p in preferences]
+        if len(set(ids)) != len(ids) or not set(ids) <= {d.definition_id for d in copies}:
+            raise ValueError("情绪偏好必须关联已知活动，且每个活动只能配置一次")
+        self.emotion_preferences = tuple(sorted(preferences, key=lambda p: p.definition_id))
+        self._emotion_weights = {p.definition_id: p.weights for p in self.emotion_preferences}
 
-    def evaluate(self, needs: NeedState) -> tuple[ActivityEvaluation, ...]:
+    @property
+    def emotion_influence_enabled(self) -> bool:
+        return (self.emotion_policy.max_adjustment > 0
+                and self.emotion_policy.max_relative_adjustment > 0
+                and any(getattr(p.weights, name) != 0
+                        for p in self.emotion_preferences for name in VAD_NAMES))
+
+    def evaluate(self, needs: NeedState, *, emotion: EmotionState | None = None) -> tuple[ActivityEvaluation, ...]:
         """提供全部候选的需求评分与不可用原因，供统一仲裁使用。"""
         needs = NeedState.model_validate(needs.model_dump())
+        if emotion is not None:
+            emotion = EmotionState.model_validate(emotion.model_dump())
         evaluations = []
         for definition in self.definitions:
             effect = definition.completion_needs_delta
@@ -82,15 +111,19 @@ class ActivitySelector:
                 eligible |= (weight > 0 and before_pressure >= self.policy.urgency_threshold
                              and after_pressure < before_pressure)
                 score += weight * ((before_pressure / 100) ** 2 - (after_pressure / 100) ** 2)
+            adjustment = 0.0
+            weights = self._emotion_weights.get(definition.definition_id)
+            if eligible and score > 0 and weights is not None:
+                adjustment = self.emotion_policy.adjustment(score, weights, emotion)
             evaluations.append(ActivityEvaluation(
-                definition, score, eligible, None if eligible else "no_urgent_need",
+                definition, score, eligible, None if eligible else "no_urgent_need", adjustment,
             ))
         return tuple(evaluations)
 
-    def choose(self, needs: NeedState) -> ActivityChoice:
-        """保留原选择接口与分数语义；自动执行入口改为通过 BehaviorArbiter。"""
-        evaluations = self.evaluate(needs)
-        scores = tuple((e.definition.definition_id, e.score) for e in evaluations if e.eligible)
-        positive = [e for e in evaluations if e.eligible and e.score > 0]
-        best = min(positive, key=lambda e: (-e.score, e.definition.definition_id)) if positive else None
+    def choose(self, needs: NeedState, *, emotion: EmotionState | None = None) -> ActivityChoice:
+        """按最终分选择；情绪修正默认为零，自动执行仍通过 BehaviorArbiter。"""
+        evaluations = self.evaluate(needs, emotion=emotion)
+        scores = tuple((e.definition.definition_id, e.final_score) for e in evaluations if e.eligible)
+        positive = [e for e in evaluations if e.eligible and e.score > 0 and e.final_score > 0]
+        best = min(positive, key=lambda e: (-e.final_score, e.definition.definition_id)) if positive else None
         return ActivityChoice(definition=None if best is None else best.definition, scores=scores)

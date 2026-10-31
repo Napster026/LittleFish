@@ -7,12 +7,12 @@ from uuid import NAMESPACE_URL, uuid5
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, StrictStr, field_validator
 
-from core.events import AgentEvent, EventProvenance
-from core.scheduler import ScheduledEvent, normalize_schedule_time
-from core.settlement import EmotionTimeConflictError, StateChangeProposal
-from core.state import AgentState
-from persona.emotion import EmotionChange, EmotionDynamics, EmotionEngine, EmotionImpulse, EmotionState
-from persona.needs import parse_need_time
+from ..core.events import AgentEvent, EventProvenance
+from ..core.scheduler import ScheduledEvent, normalize_schedule_time
+from ..core.settlement import EmotionTimeConflictError, StateChangeProposal
+from ..core.state import AgentState
+from ..persona.emotion import EmotionChange, EmotionDynamics, EmotionEngine, EmotionImpulse, EmotionState
+from ..persona.needs import parse_need_time
 
 
 EMOTION_TICK_EVENT_TYPE = "INTERNAL.emotion_tick"

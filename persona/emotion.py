@@ -6,7 +6,7 @@ from typing import Annotated, Any
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from persona.needs import parse_need_time
+from .needs import parse_need_time
 
 
 VAD_NAMES = ("valence", "arousal", "dominance")
