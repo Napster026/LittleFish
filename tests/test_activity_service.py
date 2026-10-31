@@ -11,25 +11,25 @@ from unittest.mock import AsyncMock
 
 from pydantic import ValidationError
 
-from activity.executor import ActivityContext, ActivityExecutionResult, InvalidActivityStatusError
-from activity.executors.simulated import SimulatedActivityExecutor
-from activity.manager import ActivityManager
-from activity.models import ActivityDefinition, ActivityRecord, ActivityStatus, ExecutionMode, create_activity_instance
-from activity.registry import ExecutorRegistry
-from activity.service import ActivityService, ActivityServiceError
-from activity.ticks import ActivityTick, build_activity_tick, build_tick_exhaustion_result, parse_activity_tick
-from core.events import AgentEvent
-from core.router import EventRouter
-from core.runtime import AgentRuntime
-from core.scheduler import ScheduledEvent, ScheduleStatus, TimeScheduler
-from core.state import AgentState
-from infrastructure.storage import SQLiteStorage
-from application.persistence import PersonaStore
-from persistence.errors import (
+from persona_agent.activity.executor import ActivityContext, ActivityExecutionResult, InvalidActivityStatusError
+from persona_agent.activity.executors.simulated import SimulatedActivityExecutor
+from persona_agent.activity.manager import ActivityManager
+from persona_agent.activity.models import ActivityDefinition, ActivityRecord, ActivityStatus, ExecutionMode, create_activity_instance
+from persona_agent.activity.registry import ExecutorRegistry
+from persona_agent.activity.service import ActivityService, ActivityServiceError
+from persona_agent.activity.ticks import ActivityTick, build_activity_tick, build_tick_exhaustion_result, parse_activity_tick
+from persona_agent.core.events import AgentEvent
+from persona_agent.core.router import EventRouter
+from persona_agent.core.runtime import AgentRuntime
+from persona_agent.core.scheduler import ScheduledEvent, ScheduleStatus, TimeScheduler
+from persona_agent.core.state import AgentState
+from persona_agent.infrastructure.storage import SQLiteStorage
+from persona_agent.application.persistence import PersonaStore
+from persona_agent.persistence.errors import (
     ActivityNotFoundError,
     ScheduleConflictError,
 )
-from persona.needs import NeedState
+from persona_agent.persona.needs import NeedState
 
 
 class ActivityServiceTests(unittest.IsolatedAsyncioTestCase):

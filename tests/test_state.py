@@ -5,9 +5,9 @@ from datetime import datetime, timedelta, timezone
 
 from pydantic import ValidationError
 
-from core.state import AgentState
-from persona.needs import NeedState
-from persona.emotion import EmotionDynamics, EmotionState, VAD
+from persona_agent.core.state import AgentState
+from persona_agent.persona.needs import NeedState
+from persona_agent.persona.emotion import EmotionDynamics, EmotionState, VAD
 
 
 class AgentStateTests(unittest.TestCase):

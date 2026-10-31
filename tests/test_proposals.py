@@ -4,8 +4,8 @@ import unittest
 
 from pydantic import ValidationError
 
-from core.settlement import StateChangeProposal
-from persona.needs import NeedDelta
+from persona_agent.core.settlement import StateChangeProposal
+from persona_agent.persona.needs import NeedDelta
 
 
 class StateChangeProposalTests(unittest.TestCase):

@@ -9,12 +9,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from core.events import AgentEvent
-from core.settlement import SettlementTimeError, StateChangeProposal, StateVersionConflictError
-from core.state import AgentState
-from infrastructure.storage import SQLiteStorage
-from application.persistence import PersonaStore
-from persistence.errors import (
+from persona_agent.core.events import AgentEvent
+from persona_agent.core.settlement import SettlementTimeError, StateChangeProposal, StateVersionConflictError
+from persona_agent.core.state import AgentState
+from persona_agent.infrastructure.storage import SQLiteStorage
+from persona_agent.application.persistence import PersonaStore
+from persona_agent.persistence.errors import (
     EventAlreadySettledError,
     EventConflictError,
     EventNotFoundError,
@@ -24,7 +24,7 @@ from persistence.errors import (
     StorageNotOpenError,
     UnsupportedSchemaError,
 )
-from persona.needs import NeedState
+from persona_agent.persona.needs import NeedState
 
 
 class CorePersistenceTests(unittest.IsolatedAsyncioTestCase):

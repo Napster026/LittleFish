@@ -11,25 +11,25 @@ from unittest.mock import AsyncMock
 
 from pydantic import ValidationError
 
-from activity.executor import ActivityContext
-from activity.executors.simulated import SimulatedActivityExecutor
-from activity.manager import ActivityManager
-from activity.models import ActivityDefinition, ExecutionMode, create_activity_instance
-from activity.registry import ExecutorRegistry
-from core.events import AgentEvent
-from core.router import EventRouter
-from core.runtime import AgentRuntime
-from core.scheduler import ScheduledEvent, ScheduleStatus, SchedulerError, TimeScheduler
-from core.settlement import StateChangeProposal
-from core.state import AgentState
-from infrastructure.storage import SQLiteStorage
-from application.persistence import PersonaStore
-from persistence.errors import (
+from persona_agent.activity.executor import ActivityContext
+from persona_agent.activity.executors.simulated import SimulatedActivityExecutor
+from persona_agent.activity.manager import ActivityManager
+from persona_agent.activity.models import ActivityDefinition, ExecutionMode, create_activity_instance
+from persona_agent.activity.registry import ExecutorRegistry
+from persona_agent.core.events import AgentEvent
+from persona_agent.core.router import EventRouter
+from persona_agent.core.runtime import AgentRuntime
+from persona_agent.core.scheduler import ScheduledEvent, ScheduleStatus, SchedulerError, TimeScheduler
+from persona_agent.core.settlement import StateChangeProposal
+from persona_agent.core.state import AgentState
+from persona_agent.infrastructure.storage import SQLiteStorage
+from persona_agent.application.persistence import PersonaStore
+from persona_agent.persistence.errors import (
     ScheduleConflictError,
     ScheduleVersionConflictError,
     StateNotFoundError,
 )
-from persona.needs import NeedState
+from persona_agent.persona.needs import NeedState
 
 
 class SchedulerTests(unittest.IsolatedAsyncioTestCase):

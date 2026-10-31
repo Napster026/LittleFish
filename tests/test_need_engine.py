@@ -11,16 +11,16 @@ from unittest.mock import AsyncMock
 
 from pydantic import ValidationError
 
-from application.needs import NEEDS_TICK_EVENT_TYPE, NeedTickHandler, build_need_tick, build_need_proposal
-from application.persistence import PersonaStore
-from core.events import AgentEvent
-from core.router import EventRouter
-from core.runtime import AgentRuntime
-from core.scheduler import ScheduleStatus, TimeScheduler
-from core.settlement import NeedTimeConflictError, StateChangeProposal, settle_state
-from core.state import AgentState
-from infrastructure.storage import SQLiteStorage
-from persona.needs import NeedEngine, NeedRates, NeedState, NeedTimeAdvance
+from persona_agent.application.needs import NEEDS_TICK_EVENT_TYPE, NeedTickHandler, build_need_tick, build_need_proposal
+from persona_agent.application.persistence import PersonaStore
+from persona_agent.core.events import AgentEvent
+from persona_agent.core.router import EventRouter
+from persona_agent.core.runtime import AgentRuntime
+from persona_agent.core.scheduler import ScheduleStatus, TimeScheduler
+from persona_agent.core.settlement import NeedTimeConflictError, StateChangeProposal, settle_state
+from persona_agent.core.state import AgentState
+from persona_agent.infrastructure.storage import SQLiteStorage
+from persona_agent.persona.needs import NeedEngine, NeedRates, NeedState, NeedTimeAdvance
 
 
 class NeedEngineTests(unittest.IsolatedAsyncioTestCase):

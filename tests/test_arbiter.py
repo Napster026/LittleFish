@@ -4,7 +4,7 @@ import unittest
 
 from pydantic import ValidationError
 
-from core.arbiter import (
+from persona_agent.core.arbiter import (
     ActiveBehavior, ArbitrationContext, ArbitrationPolicy, BehaviorArbiter, BehaviorCandidate, BehaviorKind,
 )
 

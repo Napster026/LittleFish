@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 from pydantic import ValidationError
 
-from core.events import AgentEvent, EventCategory, EventProvenance
+from persona_agent.core.events import AgentEvent, EventCategory, EventProvenance
 
 
 class AgentEventTests(unittest.TestCase):

@@ -9,25 +9,25 @@ from unittest.mock import AsyncMock, patch
 
 from pydantic import ValidationError
 
-from activity.executors.simulated import SimulatedActivityExecutor
-from activity.manager import ActivityManager
-from activity.models import ActivityDefinition, ActivityStatus, ExecutionMode, create_activity_instance
-from activity.registry import ExecutorRegistry
-from activity.selection import ActivitySelector, SelectionPolicy
-from activity.service import ActivityService
-from activity.ticks import build_activity_tick
-from application.autonomy import AutonomousActivityService, selection_id
-from application.needs import NEEDS_TICK_EVENT_TYPE, NeedTickHandler
-from application.persistence import PersonaStore
-from core.persistence import CorePersistence
-from core.arbiter import ArbitrationPolicy, BehaviorArbiter, BehaviorKind
-from core.events import AgentEvent
-from core.router import EventRouter
-from core.runtime import AgentRuntime
-from core.scheduler import TimeScheduler
-from core.state import AgentState
-from infrastructure.storage import SQLiteStorage
-from persona.needs import NeedRates, NeedState
+from persona_agent.activity.executors.simulated import SimulatedActivityExecutor
+from persona_agent.activity.manager import ActivityManager
+from persona_agent.activity.models import ActivityDefinition, ActivityStatus, ExecutionMode, create_activity_instance
+from persona_agent.activity.registry import ExecutorRegistry
+from persona_agent.activity.selection import ActivitySelector, SelectionPolicy
+from persona_agent.activity.service import ActivityService
+from persona_agent.activity.ticks import build_activity_tick
+from persona_agent.application.autonomy import AutonomousActivityService, selection_id
+from persona_agent.application.needs import NEEDS_TICK_EVENT_TYPE, NeedTickHandler
+from persona_agent.application.persistence import PersonaStore
+from persona_agent.core.persistence import CorePersistence
+from persona_agent.core.arbiter import ArbitrationPolicy, BehaviorArbiter, BehaviorKind
+from persona_agent.core.events import AgentEvent
+from persona_agent.core.router import EventRouter
+from persona_agent.core.runtime import AgentRuntime
+from persona_agent.core.scheduler import TimeScheduler
+from persona_agent.core.state import AgentState
+from persona_agent.infrastructure.storage import SQLiteStorage
+from persona_agent.persona.needs import NeedRates, NeedState
 
 
 def definition(identifier="rest", **effect):

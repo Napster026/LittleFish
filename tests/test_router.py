@@ -5,18 +5,18 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from core.events import AgentEvent
-from core.router import (
+from persona_agent.core.events import AgentEvent
+from persona_agent.core.router import (
     DuplicateHandlerError,
     EventRouter,
     InvalidHandlerError,
     InvalidHandlerResultError,
 )
-from core.settlement import StateChangeProposal
-from core.state import AgentState
-from infrastructure.storage import SQLiteStorage
-from application.persistence import PersonaStore
-from persona.needs import NeedState
+from persona_agent.core.settlement import StateChangeProposal
+from persona_agent.core.state import AgentState
+from persona_agent.infrastructure.storage import SQLiteStorage
+from persona_agent.application.persistence import PersonaStore
+from persona_agent.persona.needs import NeedState
 
 
 class EventRouterTests(unittest.IsolatedAsyncioTestCase):

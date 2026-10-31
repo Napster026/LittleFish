@@ -3,15 +3,15 @@
 import unittest
 from datetime import datetime, timedelta, timezone
 
-from core.settlement import (
+from persona_agent.core.settlement import (
     AgentMismatchError,
     SettlementTimeError,
     StateChangeProposal,
     StateVersionConflictError,
     settle_state,
 )
-from core.state import AgentState
-from persona.needs import NeedDelta, NeedState
+from persona_agent.core.state import AgentState
+from persona_agent.persona.needs import NeedDelta, NeedState
 
 
 class SettlementTests(unittest.TestCase):

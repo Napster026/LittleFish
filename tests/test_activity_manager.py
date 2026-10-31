@@ -4,21 +4,21 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 
-from activity.executor import (
+from persona_agent.activity.executor import (
     ActivityContext, ActivityExecutionError, ActivityExecutionResult,
     ExecutorCapabilities, InvalidActivityStatusError,
 )
-from activity.executors.simulated import SimulatedActivityExecutor
-from activity.manager import (
+from persona_agent.activity.executors.simulated import SimulatedActivityExecutor
+from persona_agent.activity.manager import (
     ActivityManager, InvalidExecutorResultError, UnsupportedExecutorCapabilityError,
 )
-from activity.models import (
+from persona_agent.activity.models import (
     ActivityDefinition, ActivityInstance, ActivityStatus, ExecutionMode, create_activity_instance,
 )
-from activity.registry import (
+from persona_agent.activity.registry import (
     DuplicateExecutorError, ExecutorNotFoundError, ExecutorRegistry, InvalidExecutorError,
 )
-from core.events import AgentEvent
+from persona_agent.core.events import AgentEvent
 
 
 class ActivityManagerTests(unittest.IsolatedAsyncioTestCase):

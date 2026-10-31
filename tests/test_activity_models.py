@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 from pydantic import ValidationError
 
-from activity.models import (
+from persona_agent.activity.models import (
     ActivityDefinition, ActivityInstance, ActivityStatus, ExecutionMode, create_activity_instance,
 )
 

@@ -8,20 +8,20 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from activity.executor import ActivityContext, ActivityExecutionResult
-from activity.executors.simulated import SimulatedActivityExecutor
-from activity.manager import ActivityManager
-from activity.models import (
+from persona_agent.activity.executor import ActivityContext, ActivityExecutionResult
+from persona_agent.activity.executors.simulated import SimulatedActivityExecutor
+from persona_agent.activity.manager import ActivityManager
+from persona_agent.activity.models import (
     ActivityDefinition, ActivityInstance, ActivityRecord, ActivityStatus,
     ExecutionMode, create_activity_instance,
 )
-from activity.registry import ExecutorRegistry
-from core.events import AgentEvent
-from core.settlement import StateChangeProposal
-from core.state import AgentState
-from infrastructure.storage import SQLiteStorage
-from application.persistence import PersonaStore
-from persistence.errors import (
+from persona_agent.activity.registry import ExecutorRegistry
+from persona_agent.core.events import AgentEvent
+from persona_agent.core.settlement import StateChangeProposal
+from persona_agent.core.state import AgentState
+from persona_agent.infrastructure.storage import SQLiteStorage
+from persona_agent.application.persistence import PersonaStore
+from persona_agent.persistence.errors import (
     ActivityAlreadyExistsError,
     ActivityCommitConflictError,
     ActivityDefinitionConflictError,
@@ -30,7 +30,7 @@ from persistence.errors import (
     EventConflictError,
     StateNotFoundError,
 )
-from persona.needs import NeedState
+from persona_agent.persona.needs import NeedState
 
 
 class ActivityStorageTests(unittest.IsolatedAsyncioTestCase):

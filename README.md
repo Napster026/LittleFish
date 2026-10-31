@@ -2,13 +2,74 @@
 
 基于 AstrBot 的事件驱动、持久化状态与可插拔活动执行器的人格化 Agent。
 
-> 本文是已确定的架构开发基线，不是已完成功能清单。当前已编写事件与结算基础、模拟活动生命周期、持久化调度、模拟活动服务，按实际经过时间计算的 NeedEngine，需求驱动的模拟活动选择，开始/继续/空闲的最小行为仲裁，以及 VAD 情绪的时间回归与事件冲击。自主选择和最小行为仲裁已由开发者测试通过，本次情绪引擎改动尚待回归验证。完整人格系统、社交认知、完整恢复及 AstrBot 插件入口仍未实现。文中“必须”“采用”表示实现约束；不能把已编写等同于已验证或完整交付。
+> 本文是已确定的架构开发基线，不是已完成功能清单。当前已编写事件与结算基础、模拟活动生命周期、持久化调度、模拟活动服务，按实际经过时间计算的 NeedEngine，需求驱动的模拟活动选择，开始/继续/空闲的最小行为仲裁，VAD 情绪的时间回归与事件冲击，以及默认关闭的情绪活动偏好。自主选择、最小行为仲裁和情绪引擎已由开发者测试通过，情绪偏好评分已由开发者测试通过；用户已验证 QQ 私聊入站、活动完成结算及空闲状态重载恢复；本次本地规则评价与阶段反馈尚待验证。完整人格系统、社交认知及完整恢复仍未实现。文中“必须”“采用”表示实现约束；不能把已编写等同于已验证或完整交付。
+
+## QQ 调试入口（AstrBot v4.29.3）
+
+已编写 `main.py` 插件入口、配置组装、QQ 入站适配与管理员命令。目标版本按 v4.29.3 官方源码核对，用户已验证 aiocqhttp 私聊入站、完成结算与空闲状态重载；本次新增评价仍需单独验证。完整安装、配置、命令与重载检查见 [QQ_DEBUG.md](QQ_DEBUG.md)。本地安装包由当前工作区源文件生成，位于 `dist/astrbot_plugin_persona-v0.2.0.zip`。
+
+支持 AstrBot 的 aiocqhttp（OneBot v11）、qq_official、qq_official_webhook 统一消息对象；QQ 连接本身由 AstrBot 中已配置的平台负责。默认群/私聊接收列表为空，可以先使用管理员命令 `/persona_scope` 和 `/persona_status`，再配置消息范围并重载。绑定消息默认经过本地规则，可生成有界情绪冲击，Persona 自动回复仍未接入。已有 AstrBot AI 功能仍由原配置决定。
+
+| 文件 | 当前作用 |
+| --- | --- |
+| `application/settings.py` | 严格加载插件配置；首次状态、活动、时钟与偏好示例默认值 |
+| `application/host.py` | 单角色组装、到期恢复、顺序关闭、消息接收和持久化控制 |
+| `application/qq.py` | 稳定消息身份、平台实例/机器人/会话区分、原时间与文本转换 |
+| `main.py` | 官方生命周期、数据目录、QQ 范围过滤及管理员命令 |
+| `_conf_schema.json` | AstrBot 配置界面参数和 simulation 字典 |
+
+插件数据写入 `StarTools.get_data_dir("astrbot_plugin_persona")` 返回目录中的 persona.sqlite3，独立于插件源码目录。一个插件实例管理一个角色；多个绑定 QQ 会话共用该角色的生活状态，原消息仍保存各自 scope_id。其他旧角色数据不会因切换 agent_id 而删除。
+
+首次启动创建角色与显式情绪初始值，重启保留状态；先处理一批到期计划，再做启动仲裁，后台继续处理余下计划。已有需求时钟的规则、已有情绪的基线/动力参数不自动覆盖，配置不一致时明确报错。删除活动目录项不会替换正在执行实例的原定义快照；旧模拟活动仍可沿用执行器推进。运行时内存队列恢复和跨进程抢占仍不包含在此入口中，同一数据目录只运行一个实例。
+
+`persona_pause` 暂停新活动的自主启动，需求、情绪时钟和已运行活动继续。单独暂停活动使用 `persona_activity pause`。控制项先通过 AstrBot 配置保存，成功后切换运行时策略，保存失败保留旧策略。普通配置更改需重载插件。
+
+为兼容 AstrBot 的嵌套插件加载，业务模块改用相对导入，通过 `persona_agent/` 包命名空间定位现有业务目录；没有向 sys.path 插入目录，也没有注册 core/activity 等全局别名。独立脚本与测试现在使用 `from persona_agent.core...` 等导入，业务文件位置与 JSON 数据格式保持兼容，原 unittest 命令不变。main.py 由 AstrBot 加载，不直接执行。
+
+## 本地规则评价与阶段反馈（v0.2.0）
+
+当前评价采用本地规则，默认开启，不调用大模型，不产生额外评价 token 或远端等待。原事件、评价回执、情绪冲击、状态和下一条情绪计划在同一事务保存，失败整体回滚。重复原事件不会重复结算；旧消息不会被批量重新评价。数据库保留 v3 六张表，反馈与评价复用事件日志，没有新增评价任务表或依赖。
+
+聊天仅处理绑定范围中的私聊、或明确指向机器人的群聊。默认覆盖感谢、赞扬、攻击、道歉、聊天邀请与友善表情；一条消息最多选一条规则。引用、部分否定/反讽标记、正负信号混杂时保守地不施加冲击。这是短语规则，不能完整理解语境和反讽。相同会话、发送者、规则与规范化文本默认冷却 30 秒，冷却跨重载保存。每轴默认限幅 ±0.1，具体幅度和短语可在 evaluation 中配置，默认值尚未调优。
+
+| 文件 | 当前职责 |
+| --- | --- |
+| `cognition/evaluation.py` | 严格规则配置、反馈效果映射和冲击限幅 |
+| `cognition/appraisal.py` | 无外部调用的聊天短语与歧义筛选 |
+| `activity/feedback.py` | 类型化阶段反馈、稳定 checkpoint 身份和事件构造 |
+| `activity/manager.py` | 校验阶段反馈与整项终态，防止混用 |
+| `application/evaluation.py` | 聊天指向判断、活动结果到情绪的本地映射 |
+| `application/evaluation_persistence.py` | 事务内回执、重复内容冷却和一次性情绪结算 |
+| `application/persistence.py` | 原消息、阶段反馈及整项完成/失败的原子协调 |
+| `application/host.py`、`main.py` | 接入 QQ、反馈报告入口和只读查询命令 |
+
+阶段反馈使用 `ACTIVITY.stage_completed`，表示一个子任务或一段内容处理完毕。`ActivityFeedback` 包含 checkpoint_id、outcome（interesting/success/neutral/failure）、summary，以及可选 stage、content_ref。每个新内容使用新 checkpoint_id；同一 checkpoint 的重试复用标识，不能改写原内容。摘要和内容引用随事件保存，`/persona_feedback [activity_id]` 查询最新反馈，历史仍保留在日志。
+
+阶段反馈本身不修改活动状态、进度、修订、原 tick 或需求收益；活动继续 running，也可在 paused 时报告已获得的结果。执行器可在同一提交中另行推进合法进度。阶段 success/failure 也不代表整项完成/失败。只有整项活动进入 completed 才按原 completion_needs_delta 结算完成收益；阶段 interesting/success/failure 可分别触发小幅情绪变化，neutral 仅更新内容。整项完成/失败有独立的情绪映射，stop 不伪装成失败。
+
+未来实际执行器或其已有模型可输出以下结构，再由适配层校验并调用 `PersonaHost.report_feedback()`。评价器本身不再次请求模型。当前未接入刷视频或实际内容获取，也不会自动把模拟活动叙事当作真实内容。
+
+```python
+from persona_agent.activity.feedback import ActivityFeedback
+
+feedback = ActivityFeedback(
+    checkpoint_id="item-001",
+    outcome="interesting",
+    summary="当前内容的摘要",
+    stage="内容观察",
+    content_ref="item:001",
+)
+# host 已初始化，activity_id 来自当前活动实例。
+# await host.report_feedback(activity_id, feedback)
+```
+
+模拟活动反馈保持 simulated 来源；真实/混合模式默认 inferred，只有执行器确有观察依据时才显式传 observed。活动已终止后拒绝新阶段反馈，已保存 checkpoint 的重复投递仍可找回原事件。`/persona_evaluation` 查看最近一次本地评价及原因。情绪偏好仍由原独立配置控制，默认关闭。新增实现尚待开发者运行测试与 QQ 升级联调，步骤见 QQ_DEBUG.md。
 
 ## 1. 定位与设计原则
 
 角色拥有稳定人格、连续生活状态、情绪变化、社交关系和长期记忆，能够参与群聊。第一版采用持续状态模拟与按需叙事相结合的方式；未来通过执行器接入真实视频、游戏和外部工具。
 
-Python 负责状态、数值计算、权限、调度与最终行为控制；DeepSeek 负责理解、评价、反思及语言生成。模型生成活动描述不代表执行了真实操作。
+Python 负责状态、数值计算、权限、调度与最终行为控制；当前情绪评价采用本地规则，后续按需接入模型进行理解、反思及语言生成。模型生成活动描述不代表执行了真实操作。
 
 | 原则 | 开发约束 |
 | --- | --- |
@@ -158,7 +219,7 @@ submit → 有界内存队列 → 单个工作任务
 注入策略的例子：
 
 ```python
-from core.arbiter import ArbitrationPolicy, BehaviorArbiter
+from persona_agent.core.arbiter import ArbitrationPolicy, BehaviorArbiter
 
 arbiter = BehaviorArbiter(ArbitrationPolicy(
     autonomous_enabled=True,
@@ -203,15 +264,15 @@ TimeScheduler → AgentRuntime → EventRouter → NeedTickHandler
 
 下一次检查默认在本次实际处理时间之后 60 秒，可配置 0.001～86400 秒。检查间隔控制唤醒频率，变化速率的单位始终是“每小时”。成功事件重投复用原提案，下一次计划不会被重置；后续计划写入失败则回滚本次需求及游标更新。原事件日志仍沿用运行时先行记录的行为。
 
-下面是已有角色与已打开 `PersonaStore` 的组装示例；速率仅为示例。`stop_event` 由宿主应用在关闭时设置，AstrBot 入口尚未自动接入：
+下面是已有角色与已打开 `PersonaStore` 的组装示例；速率仅为示例。`stop_event` 由宿主应用在关闭时设置，插件入口另见 QQ 调试说明，此示例只展示独立组装：
 
 ```python
 from datetime import datetime, timezone
-from application.needs import NEEDS_TICK_EVENT_TYPE, NeedTickHandler
-from core.router import EventRouter
-from core.runtime import AgentRuntime
-from core.scheduler import TimeScheduler
-from persona.needs import NeedRates
+from persona_agent.application.needs import NEEDS_TICK_EVENT_TYPE, NeedTickHandler
+from persona_agent.core.router import EventRouter
+from persona_agent.core.runtime import AgentRuntime
+from persona_agent.core.scheduler import TimeScheduler
+from persona_agent.persona.needs import NeedRates
 
 async def run_needs(storage, agent_id, stop_event):
     clock = lambda: datetime.now(timezone.utc)
@@ -255,7 +316,7 @@ VAD 与冲击坐标拒绝越界值、布尔值、数值字符串及非有限数�
 - `INTERNAL.emotion_tick`：自然回归计划，保存角色、旧游标和动力参数快照，使用 observed 来源。
 - `INTERNAL.emotion_impulse`：可信评价规则显式生成的情绪冲击，使用 inferred 来源并通过 causation_id 关联原事件。
 
-冲击事件 ID 由“角色 + 原事件 ID”稳定生成，每个角色对同一原事件最多施加一次冲击；同一 ID 的评价内容不能改写。原事件必须已记录，提交层核对关联及原时间。当前没有将任意聊天 payload 自动解释成冲击，也没有接入 DeepSeek 情绪评价。
+冲击事件 ID 由“角色 + 原事件 ID”稳定生成，每个角色对同一原事件最多施加一次冲击；同一 ID 的评价内容不能改写。原事件必须已记录，提交层核对关联及原时间。应用层仅将受限本地规则和类型化活动反馈解释成冲击，没有接入 DeepSeek 情绪评价。
 
 ```text
 唯一 TimeScheduler → AgentRuntime → EventRouter → EmotionEventHandler
@@ -271,10 +332,10 @@ VAD 与冲击坐标拒绝越界值、布尔值、数值字符串及非有限数�
 下面的辅助函数加到已有组装过程：在启动 runtime/scheduler 前调用，共享同一 router 和 clock。与自主活动共用原唯一调度器即可，情绪事件由 `AutonomousActivityService.handle_event()` 交给运行时处理。
 
 ```python
-from application.emotion import (
+from persona_agent.application.emotion import (
     EMOTION_TICK_EVENT_TYPE, EMOTION_IMPULSE_EVENT_TYPE, EmotionEventHandler,
 )
-from persona.emotion import EmotionDynamics, EmotionState, VAD
+from persona_agent.persona.emotion import EmotionDynamics, EmotionState, VAD
 
 async def enable_emotion(storage, agent_id, router, clock):
     handler = EmotionEventHandler(clock=clock)
@@ -298,8 +359,8 @@ async def enable_emotion(storage, agent_id, router, clock):
 上述中点初始值与参数仅是示例，由宿主选择。可信规则评价出一次冲击后可显式提交：
 
 ```python
-from application.emotion import build_emotion_impulse
-from persona.emotion import EmotionImpulse
+from persona_agent.application.emotion import build_emotion_impulse
+from persona_agent.persona.emotion import EmotionImpulse
 
 async def apply_evaluated_emotion(storage, runtime, original_event):
     await storage.record_event(original_event)
@@ -310,7 +371,7 @@ async def apply_evaluated_emotion(storage, runtime, original_event):
     return await runtime.submit(event)
 ```
 
-当前阶段完成情绪自身的时间、事件与持久化闭环，情绪尚未调整活动效用，也不触发群消息。人格卡基线提取、情绪活动偏好和社交表达属于后续接线。没有新增数据库表或第三方依赖；旧 JSON 缺少 emotion/emotion_change 时按 None 加载，旧提案回执按模型默认值归一化比较。
+情绪自身的时间、事件与持久化闭环已实现，并可通过下述可选偏好配置影响活动效用，不触发群消息。人格卡基线提取和社交表达属于后续接线。没有新增数据库表或第三方依赖；旧 JSON 缺少 emotion/emotion_change 时按 None 加载，旧提案回执按模型默认值归一化比较。
 
 ### 4.2 活动执行系统
 
@@ -348,18 +409,18 @@ async def apply_evaluated_emotion(storage, runtime, original_event):
 
 ```python
 from datetime import datetime, timezone
-from activity.executors.simulated import SimulatedActivityExecutor
-from activity.manager import ActivityManager
-from activity.models import ActivityDefinition, ExecutionMode
-from activity.registry import ExecutorRegistry
-from activity.selection import ActivitySelector, SelectionPolicy
-from activity.service import ActivityService
-from application.autonomy import AutonomousActivityService
-from application.needs import NEEDS_TICK_EVENT_TYPE, NeedTickHandler
-from core.router import EventRouter
-from core.runtime import AgentRuntime
-from core.scheduler import TimeScheduler
-from persona.needs import NeedRates
+from persona_agent.activity.executors.simulated import SimulatedActivityExecutor
+from persona_agent.activity.manager import ActivityManager
+from persona_agent.activity.models import ActivityDefinition, ExecutionMode
+from persona_agent.activity.registry import ExecutorRegistry
+from persona_agent.activity.selection import ActivitySelector, SelectionPolicy
+from persona_agent.activity.service import ActivityService
+from persona_agent.application.autonomy import AutonomousActivityService
+from persona_agent.application.needs import NEEDS_TICK_EVENT_TYPE, NeedTickHandler
+from persona_agent.core.router import EventRouter
+from persona_agent.core.runtime import AgentRuntime
+from persona_agent.core.scheduler import TimeScheduler
+from persona_agent.persona.needs import NeedRates
 
 async def run_autonomous_agent(storage, agent_id, stop_event):
     clock = lambda: datetime.now(timezone.utc)
@@ -392,7 +453,73 @@ async def run_autonomous_agent(storage, agent_id, stop_event):
             await stop_event.wait()
 ```
 
-该示例替换原来的单需求回调或活动分发回调，不为同一角色额外启动调度器。AstrBot 插件入口仍待接入，导入这些模块不会自动启动角色。
+该示例替换原来的单需求回调或活动分发回调，不为同一角色额外启动调度器。AstrBot 插件入口现通过 main.py 组装这些组件；单独导入业务模块不会自动启动角色。
+
+#### 情绪对活动偏好的有限影响
+
+`activity/emotion_preferences.py` 新增 `ActivityEmotionPreference` 与 `EmotionPreferencePolicy`。偏好按活动定义 ID 单独配置，不修改 `ActivityDefinition`、执行规则或已保存的活动快照。重复 ID、未知活动 ID、越界或非法参数会报错。
+
+每个活动配置一组三轴 VAD 权重（均为 -1～1）：权重为正表示更偏好该轴较高的情绪，为负表示更偏好较低的情绪，0 表示忽略该轴。这些只是宿主配置的偏好规则，不代表已验证的心理学模型。
+
+| 策略参数 | 含义与默认值 |
+| --- | --- |
+| `max_adjustment` | 情绪修正绝对上限，0～1，默认 0，即关闭 |
+| `max_relative_adjustment` | 修正相对于正需求分的比例上限，0～1，默认 0.5 |
+| `current_weight` | 瞬时情绪占比，0～1，默认 1；其余占比来自心情 |
+
+计算规则如下：
+
+```text
+有效 VAD = current_weight × 瞬时情绪 + (1-current_weight) × 心情
+偏好信号 = 三轴“权重 × 有效 VAD”之和 / 3，限制在 -1～1
+修正幅度 = min(max_adjustment, 正需求分 × max_relative_adjustment)
+情绪修正 = 修正幅度 × 偏好信号
+最终分 = 需求分 + 情绪修正
+```
+
+只有符合原紧迫条件且需求净收益大于 0 的候选才计算情绪修正。没有正需求收益、模式不可用、未知时长或缺少需求效果时，不因情绪而获得入选资格。最终分仍须大于 0；比例上限设为 1 且信号为 -1 时，可以将合法候选抑制为 0 分。未配置该活动的偏好、未启用角色情绪或策略关闭时，修正为 0。
+
+`ActivitySelector.evaluate(needs, emotion=...)` 仍以 `score` 保存原需求分，新增 `emotion_adjustment` 和 `final_score`；`choose()` 按最终分选择，返回的 scores 也是最终分。默认参数下结果与原需求选择一致。直接使用纯选择器时，传入的情绪快照由调用方提供，它不自行读时钟或修改状态。
+
+应用层仲裁会把已保存的情绪临时投影到本次决策时间，用于评分；投影使用原 `EmotionEngine`，不提交情绪、不增加角色版本、不消耗情绪游标。持久化时间推进仍由情绪事件负责，避免调度先后顺序让选择使用过时情绪。
+
+`BehaviorCandidate` 新增可选 `score_breakdown`，对应 `UtilityBreakdown(need_score, emotion_adjustment, final_score)`。模型检查分数相加及候选效用的一致性，仲裁器仍先检查禁用、开关、模式与占用，再比较最终效用。旧回执缺少分项时按 None 加载。
+
+每个新决策回执保存：
+
+- `arbitration` 内的候选需求分、情绪修正、最终分，以及硬约束检查结果。
+- `emotion_preference_policy` 和按活动 ID 排序的 `emotion_preferences` 配置快照。
+- 原始 `emotion_snapshot` 与 `emotion_scored_at`，用于复现时间投影和评分。
+- 原有顶层 `scores` 字段继续表示需求分，完整最终分读取候选的 score_breakdown 或 utility。
+
+启用非零有效偏好后，`AutonomousActivityService.handle_event()` 在情绪 tick 或冲击真正提交后触发仲裁；运行活动继续，暂停和人工 pending 保持占用。未配置偏好、全部权重为零或任一修正上限为零时，不增加情绪事件的自动活动触发。既有需求与活动触发入口照常运行。
+
+重复决策仍复用原回执。情绪或偏好改变后，自主 pending 只接续原实例，并检查当前硬约束，不按新的情绪重新选活动。旧回执不补写评分字段；新配置只影响后续新决策。没有增加数据库表、依赖或配置文件自动加载功能。
+
+在已有组装示例的 definitions 构造完成后，可这样替换 selector；活动 ID 必须存在于该目录中：
+
+```python
+from persona_agent.activity.emotion_preferences import ActivityEmotionPreference, EmotionPreferencePolicy
+from persona_agent.activity.selection import ActivitySelector
+from persona_agent.persona.emotion import VAD
+
+selector = ActivitySelector(
+    definitions,
+    emotion_policy=EmotionPreferencePolicy(
+        max_adjustment=0.1, max_relative_adjustment=0.3, current_weight=0.7,
+    ),
+    emotion_preferences=(
+        ActivityEmotionPreference(
+            definition_id="rest", weights=VAD(valence=-1, arousal=-0.5, dominance=0),
+        ),
+        ActivityEmotionPreference(
+            definition_id="play", weights=VAD(valence=0.5, arousal=0.5, dominance=0),
+        ),
+    ),
+)
+```
+
+示例参数尚未调优。角色情绪仍需按前述方式显式启用，情绪事件处理器仍需注册；偏好本身不修改需求恢复量、情绪冲击或活动完成条件。
 
 ### 4.3 认知与记忆系统
 
@@ -436,7 +563,7 @@ async def run_autonomous_agent(storage, agent_id, stop_event):
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from core.events import AgentEvent, EventProvenance
+from persona_agent.core.events import AgentEvent, EventProvenance
 
 event = AgentEvent(
     event_id=str(uuid4()),
@@ -490,8 +617,8 @@ restored = AgentEvent.model_validate_json(serialized)
 | `needs_time` | 可选的自然需求时间窗口；旧游标必须匹配，首次 `from_at=None` 只建立基线 |
 
 ```python
-from core.settlement import StateChangeProposal
-from persona.needs import NeedDelta
+from persona_agent.core.settlement import StateChangeProposal
+from persona_agent.persona.needs import NeedDelta
 
 proposal = StateChangeProposal(
     proposal_id="proposal-001",
@@ -537,8 +664,8 @@ restored = StateChangeProposal.model_validate_json(proposal.model_dump_json())
 依赖方向为：应用层 → 核心/活动业务与持久化契约；SQLite 适配器 → 持久化契约。`persistence/ports.py` 的协议只传递原始行和查询条件，不导入任何业务模型。业务异常位于 `persistence/errors.py`。数据库父目录由调用方创建；组合根显式装配：
 
 ```python
-from application.persistence import PersonaStore
-from infrastructure.storage import SQLiteStorage
+from persona_agent.application.persistence import PersonaStore
+from persona_agent.infrastructure.storage import SQLiteStorage
 
 async with PersonaStore(SQLiteStorage(path)) as storage:
     state = await storage.get_state("persona-001")
@@ -556,7 +683,7 @@ async with PersonaStore(SQLiteStorage(path)) as storage:
 | `commit_proposal(proposal, settled_at=...)` | 从数据库读取当前状态，在事务中结算并保存结果 |
 | `start_needs_clock(agent_id, rates=..., now=..., interval_seconds=60)` | 建立或找回需求时钟计划，不重置已保存状态 |
 
-当前数据库包含六张表：`agent_states` 保存角色 ID、版本及最小状态 JSON；`agent_events` 保存事件 ID 与完整事件 JSON；`state_settlements` 保存角色需求结算；`activity_instances` 保存固定活动定义与最新实例；`activity_commits` 保存活动原修订对应的请求和结果；`scheduled_events` 保存定时计划、状态与重试记录。当前角色 JSON 状态仅包含最小需求模型，活动和计划另表存储，后续复杂子系统仍按职责与查询需要拆表。
+当前数据库为 v3，包含六张表：`agent_states` 保存角色 ID、版本及最小状态 JSON；`agent_events` 保存事件 ID 与完整事件 JSON（包括本地评价和阶段反馈）；`state_settlements` 保存角色结算回执；`activity_instances` 保存固定活动定义与最新实例；`activity_commits` 保存活动原修订对应的请求和结果；`scheduled_events` 保存定时计划、状态与重试记录。
 
 一次新提案的提交顺序为：
 
@@ -601,8 +728,8 @@ COMMIT
 
 ```python
 from typing import Protocol
-from activity.executor import ActivityContext, ActivityExecutionResult, ExecutorCapabilities
-from activity.models import ActivityInstance
+from persona_agent.activity.executor import ActivityContext, ActivityExecutionResult, ExecutorCapabilities
+from persona_agent.activity.models import ActivityInstance
 
 class ActivityExecutor(Protocol):
     @property
@@ -663,8 +790,8 @@ class ActivityExecutor(Protocol):
 ```python
 from datetime import datetime, timezone
 
-from activity.models import ActivityDefinition, ExecutionMode, create_activity_instance
-from persona.needs import NeedDelta
+from persona_agent.activity.models import ActivityDefinition, ExecutionMode, create_activity_instance
+from persona_agent.persona.needs import NeedDelta
 
 rest = ActivityDefinition(
     definition_id="rest",
@@ -712,8 +839,8 @@ instance = create_activity_instance(
 ```python
 from datetime import timedelta
 
-from activity.executor import ActivityContext
-from activity.executors.simulated import SimulatedActivityExecutor
+from persona_agent.activity.executor import ActivityContext
+from persona_agent.activity.executors.simulated import SimulatedActivityExecutor
 
 executor = SimulatedActivityExecutor()
 # 在异步函数中使用前文 rest 与 instance：
@@ -761,8 +888,8 @@ progressed = await executor.step(ActivityContext(
 结果校验公开为纯校验方法 `ActivityManager.validate_result()`，管理器与 `ActivityPersistence` 共同使用；活动提交规则不调用执行器，只重新检查候选结果，避免绕过调用管理层提交不合法的变化。SQLite 适配器不导入管理器。
 
 ```python
-from activity.manager import ActivityManager
-from activity.registry import ExecutorRegistry
+from persona_agent.activity.manager import ActivityManager
+from persona_agent.activity.registry import ExecutorRegistry
 
 registry = ExecutorRegistry()
 registry.register(rest.definition_id, ExecutionMode.SIMULATED, SimulatedActivityExecutor())
@@ -879,14 +1006,14 @@ TimeScheduler 到期投递 → ActivityService.handle_event
 
 应用层 `PersonaStore.open()` 会修复旧版本遗留的“当前 tick 已 failed，活动仍 running”数据；直接打开 SQLite 适配器不会执行活动规则。修复使用原最终失败时间，重复应用启动不会重复增加活动修订或反馈。失败活动是终态，需要重新尝试时创建新活动实例；当前不自动重置失败计划，也不采用无限重试。
 
-`PersonaStore.commit_activity_result()` 的计划及触发事件参数是可选的。提供下一次计划时，由活动业务规则重新核对候选实例与计划；提供触发 tick 时，还核对原活动快照、原持久化计划和推进间隔。相同提交重试必须保留这两个可选参数，不能切换成不同的提交内容。自动管理的活动应通过 `ActivityService` 控制；绕过入口直接推进实例却不保存下一次计划，可能使旧 tick 过期后失去自动推进链。`ActivityService` 只依赖 `activity/ports.py` 的 `ActivityStore` 协议。数据库仍为 v3 六张表；需求时钟新增的可选 JSON 字段可兼容旧记录，无需批量数据迁移或新增依赖。
+`PersonaStore.commit_activity_result()` 的计划及触发事件参数是可选的。提供下一次计划时，由活动业务规则重新核对候选实例与计划；提供触发 tick 时，还核对原活动快照、原持久化计划和推进间隔。相同提交重试必须保留这两个可选参数，不能切换成不同的提交内容。自动管理的活动应通过 `ActivityService` 控制；绕过入口直接推进实例却不保存下一次计划，可能使旧 tick 过期后失去自动推进链。`ActivityService` 只依赖 `activity/ports.py` 的 `ActivityStore` 协议。数据库现为 v3 六张表；需求时钟新增的可选 JSON 字段可兼容旧记录，无需批量数据迁移或新增依赖。
 
 活动执行含数据库副作用，不能把 `handle_event` 注册成只计算提案的 `EventRouter` 处理函数。仅投递活动 tick 时，可以直接将它作为调度回调；同一角色还有其他定时事件时，应使用一个调度器，在回调入口分发：
 
 ```python
-from activity.service import ActivityService
-from activity.ticks import TICK_EVENT_TYPE
-from core.scheduler import TimeScheduler
+from persona_agent.activity.service import ActivityService
+from persona_agent.activity.ticks import TICK_EVENT_TYPE
+from persona_agent.core.scheduler import TimeScheduler
 
 # storage 已打开，agent_id 的角色和 activity-001 已保存；manager 已注册执行器。
 # runtime 为该角色已经启动的 AgentRuntime。
@@ -932,8 +1059,8 @@ AgentState
 ```python
 from datetime import datetime, timezone
 
-from core.state import AgentState
-from persona.needs import NeedState
+from persona_agent.core.state import AgentState
+from persona_agent.persona.needs import NeedState
 
 state = AgentState(
     agent_id="persona-001",
@@ -948,7 +1075,7 @@ restored = AgentState.model_validate_json(state.model_dump_json())
 在已创建上述 `state` 和前文 `proposal` 后，可以计算候选新状态：
 
 ```python
-from core.settlement import settle_state
+from persona_agent.core.settlement import settle_state
 
 new_state = settle_state(
     state,
@@ -1074,7 +1201,7 @@ persona_agent/
 
 ## 10. 第一版范围与未来扩展
 
-第一版交付目标：固定人格与软层属性结构；三维情绪和需求；活动选择、进度、中断与恢复；模拟执行器与叙事事实；群聊仲裁和表达阀门；事件日志、SQLite 与重启恢复；基础关系档案与重要记忆召回；DeepSeek 结构化事件评价与回复生成。
+第一版交付目标：固定人格与软层属性结构；三维情绪和需求；活动选择、进度、中断与恢复；模拟执行器与叙事事实；群聊仲裁和表达阀门；事件日志、SQLite 与重启恢复；基础关系档案与重要记忆召回；本地规则事件评价与按需模型回复生成。
 
 优先完成少量活动的完整生命周期，不以活动名称数量作为完成标准。第一版不宣称具备真实视频观看、游戏控制或完整真实环境 Agent 能力。
 

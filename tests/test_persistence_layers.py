@@ -13,20 +13,20 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import sqlite3
 
-from activity.executors.simulated import SimulatedActivityExecutor
-from activity.manager import ActivityManager
-from activity.models import ActivityDefinition, ActivityStatus, ExecutionMode, create_activity_instance
-from activity.registry import ExecutorRegistry
-from activity.service import ActivityService
-from activity.ticks import build_activity_tick
-from application.persistence import PersonaStore
-from core.events import AgentEvent
-from core.persistence import CorePersistence
-from core.settlement import StateChangeProposal
-from core.state import AgentState
-from infrastructure.storage import SQLiteStorage
-from persistence.errors import StorageNotOpenError
-from persona.needs import NeedState
+from persona_agent.activity.executors.simulated import SimulatedActivityExecutor
+from persona_agent.activity.manager import ActivityManager
+from persona_agent.activity.models import ActivityDefinition, ActivityStatus, ExecutionMode, create_activity_instance
+from persona_agent.activity.registry import ExecutorRegistry
+from persona_agent.activity.service import ActivityService
+from persona_agent.activity.ticks import build_activity_tick
+from persona_agent.application.persistence import PersonaStore
+from persona_agent.core.events import AgentEvent
+from persona_agent.core.persistence import CorePersistence
+from persona_agent.core.settlement import StateChangeProposal
+from persona_agent.core.state import AgentState
+from persona_agent.infrastructure.storage import SQLiteStorage
+from persona_agent.persistence.errors import StorageNotOpenError
+from persona_agent.persona.needs import NeedState
 
 
 class MemorySession:
@@ -155,22 +155,24 @@ class PersistenceLayersTests(unittest.IsolatedAsyncioTestCase):
     async def test_sqlite_adapter_loads_when_business_imports_are_blocked(self):
         code = """
 import builtins
+import importlib.util
 original = builtins.__import__
 def guarded(name, globals=None, locals=None, fromlist=(), level=0):
-    # Only absolute imports name project-level packages. A relative '.core'
-    # inside aiosqlite belongs to aiosqlite, not the project's core package.
-    if level == 0 and name.split('.')[0] in {'activity', 'core', 'application', 'persona'}:
+    # Resolve relative imports in the plugin namespace without blocking aiosqlite.core.
+    absolute = importlib.util.resolve_name('.' * level + name, globals['__package__']) if level else name
+    if any(absolute == 'persona_agent.' + p or absolute.startswith('persona_agent.' + p + '.')
+           for p in ('activity', 'core', 'application', 'persona')):
         raise AssertionError(name)
     return original(name, globals, locals, fromlist, level)
 builtins.__import__ = guarded
-for package in ('activity', 'core', 'application', 'persona'):
+for package in ('persona_agent.activity', 'persona_agent.core', 'persona_agent.application', 'persona_agent.persona'):
     try:
         __import__(package)
     except AssertionError:
         pass
     else:
         raise AssertionError('Business import guard is inactive: ' + package)
-from infrastructure.storage import SQLiteStorage
+from persona_agent.infrastructure.storage import SQLiteStorage
 assert not hasattr(SQLiteStorage, 'commit_activity_result')
 """
         result = subprocess.run(
