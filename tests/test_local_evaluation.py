@@ -112,6 +112,40 @@ class LocalEvaluationTests(unittest.IsolatedAsyncioTestCase):
         with closing(sqlite3.connect(self.path)) as db:
             self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 3)
 
+    async def test_plain_directed_message_relieves_social_need_without_emotion(self):
+        before = await self.state()
+        receipt = await self.store.record_rule_message(self.agent, self.source("plain", text="今天天气不错"),
+                                                       now=self.now)
+        self.assertEqual(receipt.payload["evaluation"]["reason"], "no_clear_rule")
+        self.assertEqual(receipt.payload["evaluation"]["needs_reason"], "directed_engagement")
+        state = await self.state()
+        self.assertAlmostEqual(state.needs.social_need, before.needs.social_need - .3)
+        self.assertEqual(state.emotion, before.emotion)
+        self.assertEqual(state.needs.boredom, before.needs.boredom)
+        self.assertEqual(state.needs.energy, before.needs.energy)
+
+    async def test_disabled_master_gate_preserves_all_state_and_does_not_consume_cooldown(self):
+        self.store._evaluation = EvaluationSettings(enabled=False)
+        before = await self.state()
+        cases = (("plain-off", "今天天气不错", "", False), ("positive-off", "谢谢你", "", False),
+                 ("negative-off", "你真没用", "", False), ("empty-off", "", "", False),
+                 ("group-off", "今天天气不错", "group", True))
+        for identifier, text, group, directed in cases:
+            with self.subTest(identifier=identifier):
+                receipt = await self.store.record_rule_message(self.agent,
+                    self.source(identifier, text=text, group=group), now=self.now, directed=directed)
+                result = receipt.payload["evaluation"]
+                self.assertEqual(result["reason"], "disabled")
+                self.assertIsNone(result["impulse"])
+                self.assertIsNone(result["needs_delta"])
+                self.assertEqual(await self.state(), before)
+        self.store._evaluation = EvaluationSettings()
+        await self.store.record_rule_message(self.agent, self.source("enabled-again", text="今天天气不错"), now=self.now)
+        state = await self.state()
+        self.assertAlmostEqual(state.needs.social_need, before.needs.social_need-.3)
+        self.assertEqual(state.version, before.version+1)
+        self.assertEqual(state.emotion, before.emotion)
+
     async def test_group_target_gate_and_neutral_receipt(self):
         ignored = await self.store.record_rule_message(self.agent, self.source("group-one", group="group"), now=self.now)
         self.assertEqual(ignored.payload["evaluation"]["reason"], "not_directed")
@@ -126,7 +160,10 @@ class LocalEvaluationTests(unittest.IsolatedAsyncioTestCase):
         first = await self.store.report_activity_feedback(self.agent, "activity-one", feedback, now=self.now)
         role = await self.state()
         self.assertEqual(role.emotion.current.valence, .06)
-        self.assertEqual(role.needs, self.initial.needs)
+        self.assertEqual(role.needs.energy, self.initial.needs.energy)
+        self.assertEqual(role.needs.satiety, self.initial.needs.satiety)
+        self.assertEqual(role.needs.social_need, self.initial.needs.social_need)
+        self.assertEqual(role.needs.boredom, self.initial.needs.boredom-2)
         self.assertEqual(await self.store.get_activity(self.agent, "activity-one"), before)
         self.now += timedelta(seconds=1)
         second = ActivityFeedback(checkpoint_id="item-2", outcome="neutral", summary="下一段内容")

@@ -2,7 +2,7 @@
 name: astrbot_plugin_persona
 display_name: Persona Agent
 desc: 具有持久状态与可插拔活动执行器的人格化 Agent（开发中）
-version: v0.2.0
+version: v0.3.2
 author: "local-development"
 repo: ""
 astrbot_version: "==4.29.3"

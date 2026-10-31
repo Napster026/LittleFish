@@ -20,3 +20,6 @@ logs/
 *.sqlite3-wal
 *.sqlite3-shm
 .idea/
+dist/
+# 手动运行测试时把 TMP 指到工作区内产生的临时目录。
+.dsh-tmp/

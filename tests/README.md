@@ -1,6 +1,51 @@
 # 手动验证
 
-测试由开发者在项目根目录运行。自主活动选择、最小行为仲裁与情绪引擎已由开发者测试通过；情绪偏好评分也已通过；用户已验证 QQ 私聊基础链路；本次本地规则与阶段反馈尚待回归确认。以功能行为和真实缺陷作为验收依据，不以测试数量衡量进度。
+测试由开发者在项目根目录运行。自主活动选择、最小行为仲裁与情绪引擎已由开发者测试通过；情绪偏好评分也已通过；用户已验证 QQ 私聊基础链路；v0.2.1 全量测试已由用户确认通过；v0.3.0 全量测试已由用户确认通过；本次 v0.3.1 修订尚待回归确认。以功能行为和真实缺陷作为验收依据，不以测试数量衡量进度。
+
+本次 v0.3.2 先运行：
+
+```powershell
+python -m unittest discover -s tests -p "test_local_evaluation.py" -v
+python -m unittest discover -s tests -p "test_astrbot_host.py" -v
+python -m unittest discover -s tests -v
+```
+
+重点检查：总开关关闭后普通及情感消息均不修改状态，不占用后续冷却；时间钳制保留平台原时间，重投/时钟追上/重载不重复结算，旧消息兼容，以及审计与消息整体回滚。实现者未运行测试，以下保留历史版本说明。
+
+本次 v0.3.1 先运行：
+
+```powershell
+python -m unittest discover -s tests -p "test_appraisal.py" -v
+python -m unittest discover -s tests -p "test_local_evaluation.py" -v
+python -m unittest discover -s tests -p "test_astrbot_host.py" -v
+python -m unittest discover -s tests -v
+```
+
+重点验证：心理需求与情绪共用提案、纯需求路径、社交事实约束、完成收益保留轴、跨 checkpoint 冷却、零证据先验一致、高强度区分、两小时前的失败评价仅归档、活跃调度查询不读历史事件、辅助索引查询计划，以及旧 v0.3.0 预约兼容。本次实现者只做静态检查，没有执行这些测试。下方保留历史版本说明。
+
+本次 v0.3.0 先运行：
+
+```powershell
+python -m unittest discover -s tests -p "test_appraisal.py" -v
+python -m unittest discover -s tests -p "test_astrbot_host.py" -v
+python -m unittest discover -s tests -p "test_local_evaluation.py" -v
+python -m unittest discover -s tests -v
+```
+
+新用例覆盖：事实与体验分离、严格 JSON、同次总结携带体验、唯一最终结算、等待跨重载、最新状态提交、结果与截止时间竞争、非法/uncertain 兜底、迟到仅存分析、整项收益不等待、预约及结果事务回滚、关闭评价与收紧幅度、耗尽计划恢复、旧反馈字段格式兼容，以及宿主真实调度链的替身验证。测试不访问任何模型。实现者只做静态检查，未运行这些测试。
+
+以下保留此前版本的验证说明。
+
+本次 v0.2.1 修复先运行：
+
+```powershell
+python -m unittest discover -s tests -p "test_autonomy.py" -v
+python -m unittest discover -s tests -p "test_emotion.py" -v
+python -m unittest discover -s tests -p "test_astrbot_host.py" -v
+python -m unittest discover -s tests -v
+```
+
+重点检查同版本启动回执与活动 ID 复用、pending 启动失败重试、空闲回执去重、新版本生成新键；以及默认 300 秒、已有间隔调整、同游标旧 tick 失效、旧格式计划恢复、参数越权拒绝与事务回滚。实现者未运行这些测试。
 
 尚未安装依赖时：
 
@@ -35,7 +80,7 @@ python -m unittest discover -s tests -v
 - 控制项保存失败时保留旧策略，重载后策略与状态连续。
 - 管理员校验、绑定范围过滤以及官方 API 替身下的插件入口行为。
 
-测试不需要安装 AstrBot，入口测试只替身公开 API，不替代真实框架与 QQ 联调。业务和测试导入已统一到 persona_agent 命名空间，完整回归尤其重要；测试命令不变。真实联调步骤见 QQ_DEBUG.md。
+测试不需要安装 AstrBot，入口测试只替身公开 API，不替代真实框架与 QQ 联调。业务和测试导入已统一到 persona_agent 命名空间，完整回归尤其重要；测试命令不变。本版配置与回归说明见 CHANGES_v0.3.1.md。
 
 已有情绪偏好回归重点：
 

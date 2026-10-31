@@ -15,7 +15,10 @@ from unittest.mock import patch
 from pydantic import ValidationError
 
 from persona_agent.application.host import PersonaHost
-from persona_agent.application.qq import adapt_qq_message
+from persona_agent.activity.feedback import ActivityFeedback
+from persona_agent.application.qq import adapt_qq_message, message_time_adjustment_id
+from persona_agent.core.persistence import CorePersistence
+from persona_agent.core.events import AgentEvent
 from persona_agent.application.settings import HostSettings
 from persona_agent.persistence.errors import EventConflictError
 
@@ -107,6 +110,8 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
         event.message_obj.timestamp += 1
         await self.host.ingest(adapt_qq_message(event))
         self.assertEqual(await self.host.store.get_event(canonical.event_id), canonical)
+        self.assertIsNone(await self.host.store.get_event(message_time_adjustment_id(self.settings.agent_id, canonical.event_id)))
+        # 群消息没有指向角色：不构成一次互动，状态保持不变。
         self.assertEqual(await self.host.store.get_state(self.settings.agent_id), before)
         event.text = "内容被更改"
         with self.assertRaises(EventConflictError):
@@ -124,6 +129,120 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
         self.assertLess(restored.needs.energy, before.needs.energy)
         self.assertIn("角色：", await self.host.status())
         self.assertIn("行为：", await self.host.decision())
+
+    async def test_future_platform_timestamp_is_audited_and_replay_survives_clock_catchup(self):
+        await self.host.start()
+        await self.host.scheduler.stop()  # 本例只验证消息重投，避免时间推进混入生活时钟。
+        before = await self.host.store.get_state(self.settings.agent_id)
+        event = QQEvent(group="")
+        event.message_obj.timestamp = int(self.now.timestamp())+5
+        incoming = adapt_qq_message(event)
+        await self.host.ingest(incoming)
+        stored = await self.host.store.get_event(incoming.event_id)
+        self.assertEqual(stored.timestamp, self.now)
+        self.assertEqual(stored.payload, incoming.payload)
+        audit_id = message_time_adjustment_id(self.settings.agent_id, incoming.event_id)
+        audit = await self.host.store.get_event(audit_id)
+        self.assertEqual(audit.causation_id, incoming.event_id)
+        self.assertEqual(audit.payload["platform_timestamp"], incoming.timestamp.isoformat())
+        self.assertEqual(audit.payload["received_at"], self.now.isoformat())
+        self.assertEqual(audit.payload["offset_seconds"], 5)
+        state = await self.host.store.get_state(self.settings.agent_id)
+        self.assertAlmostEqual(state.needs.social_need, before.needs.social_need-.3)
+        await self.host.ingest(incoming)
+        self.now += timedelta(seconds=6)
+        await self.host.ingest(incoming)
+        self.assertEqual(await self.host.store.get_state(self.settings.agent_id), state)
+        self.assertEqual(await self.host.store.get_event(audit_id), audit)
+        self.assertEqual(await self.host.store.get_event(incoming.event_id), stored)
+        await self.host.stop()
+        self.host = self.make_host()
+        await self.host.start()
+        await self.host.scheduler.stop()
+        restored = await self.host.store.get_state(self.settings.agent_id)
+        await self.host.ingest(incoming)
+        self.assertEqual(await self.host.store.get_state(self.settings.agent_id), restored)
+        self.assertEqual(await self.host.store.get_event(audit_id), audit)
+        event.text = "内容变化"
+        with self.assertRaises(EventConflictError):
+            await self.host.ingest(adapt_qq_message(event))
+
+    async def test_legacy_clamped_message_without_audit_still_replays(self):
+        await self.host.start()
+        incoming = QQEvent(group="")
+        incoming.message_obj.timestamp += 5
+        raw = adapt_qq_message(incoming)
+        legacy = AgentEvent(**{**raw.model_dump(), "timestamp": self.now})
+        await self.host.store.record_rule_message(self.settings.agent_id, legacy, now=self.now)
+        before = await self.host.store.get_state(self.settings.agent_id)
+        await self.host.ingest(raw)
+        self.assertEqual(await self.host.store.get_state(self.settings.agent_id), before)
+        self.assertEqual(await self.host.store.get_event(raw.event_id), legacy)
+        audit_id = message_time_adjustment_id(self.settings.agent_id, raw.event_id)
+        self.assertIsNone(await self.host.store.get_event(audit_id))
+
+    async def test_time_audit_failure_rolls_back_message_and_state(self):
+        await self.host.start()
+        before = await self.host.store.get_state(self.settings.agent_id)
+        event = QQEvent(group="")
+        event.message_obj.timestamp += 5
+        incoming = adapt_qq_message(event)
+        original = CorePersistence.record_event
+        async def fail_audit(core, item):
+            if item.event_type == "INTERNAL.message_time_adjusted":
+                raise RuntimeError("audit write failed")
+            await original(core, item)
+        with patch.object(CorePersistence, "record_event", new=fail_audit):
+            with self.assertRaises(RuntimeError):
+                await self.host.ingest(incoming)
+        self.assertIsNone(await self.host.store.get_event(incoming.event_id))
+        audit_id = message_time_adjustment_id(self.settings.agent_id, incoming.event_id)
+        self.assertIsNone(await self.host.store.get_event(audit_id))
+        self.assertEqual(await self.host.store.get_state(self.settings.agent_id), before)
+
+    async def test_existing_sixty_second_emotion_clock_can_change_to_three_hundred(self):
+        legacy = self.settings.model_dump()
+        legacy["simulation"]["initial_emotion"]["dynamics"]["tick_interval_seconds"] = 60
+        self.host = self.make_host(HostSettings(**legacy))
+        await self.host.start()
+        before = await self.host.store.get_state(self.settings.agent_id)
+        active = await self.host.store.list_active_activities(self.settings.agent_id)
+        await self.host.stop()
+        self.now += timedelta(seconds=1)
+        self.host = self.make_host()
+        await self.host.start()
+        after = await self.host.store.get_state(self.settings.agent_id)
+        self.assertEqual(after.emotion.dynamics.tick_interval_seconds, 300)
+        self.assertEqual(after.emotion.current, before.emotion.current)
+        self.assertEqual(after.emotion.baseline, before.emotion.baseline)
+        self.assertEqual(after.version, before.version+1)
+        self.assertEqual(await self.host.store.list_active_activities(self.settings.agent_id), active)
+        await self.host.stop()
+        self.host = self.make_host()
+        await self.host.start()
+        self.assertEqual(await self.host.store.get_state(self.settings.agent_id), after)
+
+    async def test_deferred_appraisal_deadline_runs_after_host_restart(self):
+        changed = self.settings.model_dump()
+        changed["evaluation"]["semantic"] = {"enabled": True, "timeout_seconds": 3}
+        self.host = self.make_host(HostSettings(**changed))
+        await self.host.start()
+        active = (await self.host.store.list_active_activities(self.settings.agent_id))[0]
+        source = await self.host.report_feedback(active.instance.activity_id, ActivityFeedback(
+            checkpoint_id="host-appraisal", task="failure", summary="等待体验结果", evaluation_mode="deferred"))
+        self.assertEqual(len(await self.host.pending_appraisals()), 1)
+        self.assertIn("尚未结算", await self.host.evaluation_status(source.event_id))
+        before = await self.host.store.get_state(self.settings.agent_id)
+        await self.host.stop()
+        self.now += timedelta(seconds=4)
+        self.host = self.make_host(HostSettings(**changed))
+        await self.host.start()
+        after = await self.host.store.get_state(self.settings.agent_id)
+        self.assertEqual(after.version, before.version+1)
+        self.assertLess(after.emotion.current.valence, 0)
+        self.assertEqual(await self.host.pending_appraisals(), ())
+        self.assertIn("semantic_timeout", await self.host.evaluation_status(source.event_id))
+        self.assertEqual(after.needs, before.needs)
 
     async def test_controls_persist_and_failed_save_preserves_policy(self):
         await self.host.start()

@@ -5,10 +5,12 @@ import weakref
 from astrbot.api import AstrBotConfig
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, StarTools
+from astrbot.api.provider import ProviderRequest
 
 from .persona_agent.application.host import PersonaHost
 from .persona_agent.application.qq import adapt_qq_message, is_qq_event, qq_scope
 from .persona_agent.application.settings import HostSettings
+from .persona_agent.application.chat_context import apply_prompt_context
 
 
 class QQCaptureFilter(filter.CustomFilter):
@@ -77,6 +79,28 @@ class PersonaPlugin(Star):
         except Exception:
             self.logger.exception("Persona QQ 入站处理失败")
 
+    def _chat_context_allowed(self, event):
+        if not self._capture_allowed(event) or not self.host.settings.chat_context.enabled:
+            return False
+        if event.get_group_id():
+            return (not self.host.settings.chat_context.private_only
+                    and bool(getattr(event, "is_at_or_wake_command", False)))
+        return True
+
+    @filter.on_llm_request()
+    async def attach_chat_context(self, event: AstrMessageEvent, req: ProviderRequest):
+        try:
+            # 也清除同一请求对象先前属于本插件的块，避免重试或跨会话复用残留。
+            apply_prompt_context(req, None)
+            if not self._chat_context_allowed(event) or event.get_extra("handlers_parsed_params", {}):
+                return
+            context = await self.host.chat_context(event.unified_msg_origin)
+            if context is not None:
+                apply_prompt_context(req, context)
+                self.host.remember_context(context)
+        except Exception:
+            self.logger.exception("Persona 上下文组装失败，沿用原聊天请求")
+
     async def _command(self, event, operation, argument="", activity_id=""):
         # 装饰器以外保留入口校验，避免直接调用绕过管理员限制。
         if not is_qq_event(event) or not event.is_admin():
@@ -91,9 +115,19 @@ class PersonaPlugin(Star):
             if operation == "decision":
                 return await self.host.decision()
             if operation == "evaluation":
-                return await self.host.evaluation_status()
+                return await self.host.evaluation_status(argument)
             if operation == "feedback":
                 return await self.host.feedback_status(argument)
+            if operation == "context":
+                if not self._chat_context_allowed(event):
+                    return "本会话未启用聊天上下文，请检查绑定范围和 private_only 设置"
+                if argument not in ("", "now", "last"):
+                    return "用法：/persona_context [now|last]"
+                if argument == "last":
+                    context = self.host.last_context(event.unified_msg_origin)
+                    return "暂无本次加载实际注入的上下文" if context is None else context.preview()
+                context = await self.host.chat_context(event.unified_msg_origin)
+                return "当前上下文预览（不调用模型）：\n"+context.preview()
             if operation in ("pause", "resume"):
                 await self.host.set_controls(enabled=operation == "resume")
                 return ("自主启动已暂停，现有活动继续运行。需要暂停活动时使用 /persona_activity pause。"
@@ -107,10 +141,11 @@ class PersonaPlugin(Star):
             return "\n".join((
                 "/persona_scope：查看 QQ 会话标识", "/persona_status：查看角色、活动和目录",
                 "/persona_decision：查看最近仲裁", "/persona_pause / /persona_resume：暂停或恢复自主启动",
-                "/persona_evaluation：查看最近本地规则评价与有效冲击",
+                "/persona_evaluation [原事件ID]：查看评价、等待状态与有效冲击",
                 "/persona_disable 活动定义ID / /persona_enable 活动定义ID",
                 "/persona_activity pause|resume|stop [活动实例ID]",
                 "/persona_feedback [活动实例ID]：查看阶段内容",
+                "/persona_context [now|last]：预览当前或最近实际注入的上下文",
             ))
         except (ValueError, RuntimeError) as exc:
             self.logger.exception("Persona 管理操作失败")
@@ -175,12 +210,18 @@ class PersonaPlugin(Star):
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("persona_evaluation")
-    async def persona_evaluation(self, event: AstrMessageEvent):
-        if (text := await self._command(event, "evaluation")) is not None:
+    async def persona_evaluation(self, event: AstrMessageEvent, source_event_id: str = ""):
+        if (text := await self._command(event, "evaluation", source_event_id)) is not None:
             yield event.plain_result(text)
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("persona_feedback")
     async def persona_feedback(self, event: AstrMessageEvent, activity_id: str = ""):
         if (text := await self._command(event, "feedback", activity_id)) is not None:
+            yield event.plain_result(text)
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("persona_context")
+    async def persona_context(self, event: AstrMessageEvent, mode: str = ""):
+        if (text := await self._command(event, "context", mode)) is not None:
             yield event.plain_result(text)

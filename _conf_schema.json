@@ -70,7 +70,7 @@
           "emotion_half_life_seconds": 300,
           "mood_half_life_seconds": 7200,
           "mood_impulse_ratio": 0.1,
-          "tick_interval_seconds": 60
+          "tick_interval_seconds": 300
         }
       },
       "activities": [
@@ -138,7 +138,7 @@
     "hint": "初始值只在首次创建时使用。已有时钟的速率、基线和动力参数不支持直接切换；修改目录和偏好后重载插件。"
   },
   "evaluation": {
-    "description": "本地规则评价（无额外模型调用）",
+    "description": "统一评价：本地规则与可选附带体验结果",
     "type": "dict",
     "default": {
       "enabled": true,
@@ -260,8 +260,78 @@
           "arousal": 0.03,
           "dominance": -0.03
         }
+      },
+      "semantic": {
+        "enabled": false,
+        "timeout_seconds": 30,
+        "weights": {
+          "interest": {
+            "valence": 0.06,
+            "arousal": 0.02,
+            "dominance": 0
+          },
+          "frustration": {
+            "valence": -0.08,
+            "arousal": 0.03,
+            "dominance": -0.03
+          },
+          "progress": {
+            "valence": 0.04,
+            "arousal": 0.01,
+            "dominance": 0.04
+          },
+          "control": {
+            "valence": 0.02,
+            "arousal": 0,
+            "dominance": 0.04
+          },
+          "pleasantness": {
+            "valence": 0.08,
+            "arousal": 0,
+            "dominance": 0
+          },
+          "activation": {
+            "valence": 0,
+            "arousal": 0.06,
+            "dominance": 0
+          }
+        },
+        "adjustment_scale": 0.1
+      },
+      "max_effect_age_seconds": 300,
+      "needs": {
+        "enabled": true,
+        "max_delta": 2,
+        "cooldown_seconds": 30,
+        "chat_positive": -0.5,
+        "chat_negative": 0.5,
+        "chat_engaged": -0.3,
+        "interest": {
+          "boredom": -2,
+          "social_need": 0
+        },
+        "frustration": {
+          "boredom": 0,
+          "social_need": 0.5
+        },
+        "progress": {
+          "boredom": -0.5,
+          "social_need": 0
+        },
+        "control": {
+          "boredom": 0,
+          "social_need": 0
+        },
+        "pleasantness": {
+          "boredom": 0,
+          "social_need": -1
+        },
+        "activation": {
+          "boredom": 0,
+          "social_need": 0
+        }
       }
     },
-    "hint": "聊天短语和活动语义由本地规则映射为有界情绪冲击。群聊需明确指向角色；相同内容冷却跨重载保留。无需提供者 ID 或 API Key。保存后重载。"
+    "hint": "聊天与活动共享一次性评价。needs 仅影响无聊/社交需求，物理需求仍由执行事实决定；已有完成效果占用的需求轴不再奖励。semantic 使用 activity_effects 相同先验再柔性修正。超过 max_effect_age_seconds 的反馈只归档，不补发效果。无独立模型请求。"
   }
 }

@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from uuid import NAMESPACE_URL, uuid5
 
 from ..core.events import AgentEvent, EventProvenance
+from ..core.scheduler import normalize_schedule_time
+from ..core.state import AgentState
 
 
 QQ_ADAPTERS = frozenset({"aiocqhttp", "qq_official", "qq_official_webhook"})
@@ -47,3 +49,25 @@ def adapt_qq_message(event) -> AgentEvent:
         scope_id=scope["scope_id"], payload={**scope, "message_id": str(message_id),
                                            "text": text[:8000], "text_truncated": len(text) > 8000},
     )
+
+
+def message_time_adjustment_id(agent_id: str, event_id: str) -> str:
+    AgentState.validate_agent_id(agent_id)
+    identity = json.dumps([agent_id, event_id], ensure_ascii=False, separators=(",", ":"))
+    return f"qq-time-adjustment:{uuid5(NAMESPACE_URL, identity)}"
+
+
+def build_message_time_adjustment(agent_id: str, event: AgentEvent, *, platform_timestamp: datetime,
+                                  received_at: datetime) -> AgentEvent:
+    """钳制审计另存为关联事件，不改变 QQ 消息 payload 与已有消息去重规则。"""
+    platform_timestamp = normalize_schedule_time(platform_timestamp)
+    received_at = normalize_schedule_time(received_at)
+    if (event.event_type != "SOCIAL.message_received" or event.provenance != EventProvenance.OBSERVED
+            or event.scope_id is None or event.timestamp != received_at or platform_timestamp <= received_at):
+        raise ValueError("时间调整记录要求原始平台时间在未来，且消息时间已钳制到接收时刻")
+    return AgentEvent(event_id=message_time_adjustment_id(agent_id, event.event_id),
+        event_type="INTERNAL.message_time_adjusted", timestamp=received_at, source="application.qq",
+        provenance=EventProvenance.OBSERVED, scope_id=event.scope_id, causation_id=event.event_id,
+        payload={"agent_id": agent_id, "platform_timestamp": platform_timestamp.isoformat(),
+                 "received_at": received_at.isoformat(),
+                 "offset_seconds": (platform_timestamp-received_at).total_seconds()})
