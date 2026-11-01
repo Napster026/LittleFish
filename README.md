@@ -1,14 +1,14 @@
-# Persona Agent v1.0
+# Persona Agent（当前开发版 v0.5.3）
 
 基于 AstrBot 的事件驱动、持久化状态与可插拔活动执行器的人格化 Agent。
 
-> 本文是已确定的架构开发基线，不是已完成功能清单。当前已编写事件与结算基础、模拟活动生命周期、持久化调度、模拟活动服务，按实际经过时间计算的 NeedEngine，需求驱动的模拟活动选择，开始/继续/空闲的最小行为仲裁，VAD 情绪的时间回归与事件冲击，以及默认关闭的情绪活动偏好。自主选择、最小行为仲裁和情绪引擎已由开发者测试通过，情绪偏好评分已由开发者测试通过；用户已验证 QQ 私聊入站、活动完成结算及空闲状态重载恢复；v0.2.1 全量测试已由用户确认通过；v0.3.0 全量测试已由用户确认通过；本次 v0.3.1 修订尚待验证。完整人格系统、社交认知及完整恢复仍未实现。文中“必须”“采用”表示实现约束；不能把已编写等同于已验证或完整交付。
+> 本文前部记录当前接入与版本说明，后部保留 v1.0 长期设计基线。当前已实现状态、需求与情绪、模拟活动、行为仲裁、规则/结构化体验评价、QQ 接入、聊天状态上下文及会话记忆第一版。完整语义记忆、关系档案、反思、主动表达和真实执行器仍属后续工作。此前基础链路与测试由用户验证；本轮 v0.5.3 仅做静态检查，单元测试和 QQ 联调待用户运行。实际目录及清理结论见 [项目结构复核](PROJECT_STRUCTURE.md)。
 
 ## QQ 调试入口（AstrBot v4.29.3）
 
-已编写 `main.py` 插件入口、配置组装、QQ 入站适配与管理员命令。目标版本按 v4.29.3 官方源码核对，用户已验证 aiocqhttp 私聊入站、完成结算与空闲状态重载；本次新增评价仍需单独验证。本版配置、修改与回归说明见 [本版调试与验证说明](CHANGES_v0.3.1.md)。当前版本为 v0.3.2；按 PACKAGING_FILES_v0.3.2.txt 清单保留相对目录自行打包，main.py 等入口文件位于安装包根目录。实现者不再生成安装包。
+已编写 `main.py` 插件入口、配置组装、QQ 入站适配、管理员命令及已有模型请求的上下文钩子。目标 AstrBot 版本为 v4.29.3，用户已验证 aiocqhttp 私聊基础链路。当前版本 **v0.5.3**；按 [PACKAGING_FILES_v0.5.3.txt](PACKAGING_FILES_v0.5.3.txt) 保留相对目录自行全量打包，`main.py` 等入口位于包根目录；不生成 ZIP。按文件修改和本轮验证步骤见 [CHANGES_v0.5.3.md](CHANGES_v0.5.3.md)。
 
-支持 AstrBot 的 aiocqhttp（OneBot v11）、qq_official、qq_official_webhook 统一消息对象；QQ 连接本身由 AstrBot 中已配置的平台负责。默认群/私聊接收列表为空，可以先使用管理员命令 `/persona_scope` 和 `/persona_status`，再配置消息范围并重载。绑定消息默认经过本地规则，可生成有界情绪冲击，Persona 自动回复仍未接入。已有 AstrBot AI 功能仍由原配置决定。
+支持 AstrBot 的 aiocqhttp（OneBot v11）、qq_official、qq_official_webhook 统一消息对象；连接由 AstrBot 已配置的平台负责。绑定群/私聊列表默认为空，先使用管理员 `/persona_scope` 查看身份，再配置范围并重载。已有 AI 回复由 AstrBot 原配置决定，本插件在允许的请求中附加状态，不创建额外回复请求。
 
 | 文件 | 当前作用 |
 | --- | --- |
@@ -25,6 +25,44 @@
 `persona_pause` 暂停新活动的自主启动，需求、情绪时钟和已运行活动继续。单独暂停活动使用 `persona_activity pause`。控制项先通过 AstrBot 配置保存，成功后切换运行时策略，保存失败保留旧策略。普通配置更改需重载插件。
 
 为兼容 AstrBot 的嵌套插件加载，业务模块改用相对导入，通过 `persona_agent/` 包命名空间定位现有业务目录；没有向 sys.path 插入目录，也没有注册 core/activity 等全局别名。独立脚本与测试现在使用 `from persona_agent.core...` 等导入，业务文件位置与 JSON 数据格式保持兼容，原 unittest 命令不变。main.py 由 AstrBot 加载，不直接执行。
+
+## v0.5.3：索引坏行隔离与启动诊断
+
+待重建记忆的行级数据错误会跳过并保留待修复标记，其他正常记录继续修复。明确使用每批 500 条、ID 游标分页和单行保存点，避免重试死循环或半写入；连接、保存点失败及取消仍按全局错误处理。
+
+启动日志及 `/persona_status` 显示本次跳过统计；管理员可用 `/persona_memory pending` 查看当前会话的待修复 ID，用 delete 清理。正常召回、归并和列表跳过待修复行，原文及版本不被自动改写。数据库仍为 **v6、十二张表**，配置默认值和词项版本不变；说明见 [CHANGES_v0.5.3.md](CHANGES_v0.5.3.md)。实现者未运行测试或生成安装包。
+
+## v0.5.2：召回展示去重
+
+排序后、最终条数限制前增加只读展示选择。同一主体、日期、来源及状态内的同一具体安排只保留最高排名；只有一种具体安排时，粗略“出门”和对应细节可组成一个展示组。`plan:outing` 中不同具体安排不因同题同日而互相隐藏。未知主体/日期和非计划保持原有结果。
+
+仅影响聊天召回和 search 预览，list/show/history、归并、正文、修订、来源及角色版本不变。数据库仍为 **v6、十二张表**，相较 v0.5.1 没有新增迁移。说明见 [CHANGES_v0.5.2.md](CHANGES_v0.5.2.md)。实现者未运行测试或生成安装包。
+
+## v0.5.1：召回排序与索引修订
+
+召回改为词项覆盖率/精度归一化，再乘重要度与默认 30 天半衰；原始命中次数不再直接加分或用于提前截断候选。关键词候选按词有界获取后批量评分。仅搜索索引去除辅助虚词，“逛了街”可匹配“逛街”，原文与归并键保持不变。
+
+普通 complete/cancel 不覆盖终态计划。归并时间范围改为独立 updated_at 列的显式条件；数据库升为 **v6，仍为十二张表**。首次启动按标记重建旧词项索引，保留原 JSON、来源、修订和角色版本；失败可重试。更新前停插件备份数据，旧版不能打开 v6。细节见 [CHANGES_v0.5.1.md](CHANGES_v0.5.1.md)，实现者未运行测试或打包。
+
+## v0.5.0：会话记忆与近期归并
+
+绑定私聊中，明确的第一人称计划/偏好可自动形成有来源的会话记忆。默认优先寻找最近一小时内最多 20 条相关候选：同人物、同目标日期的“明天出门”可被“明天去逛街看电影”补充，沿用 ID 并保留修订与来源；不同具体安排不因时间近直接覆盖。
+
+“我的未来计划是什么”通过类型/目标日期召回，普通内容使用有限关键词检索。近期与关键词都不是通用语义理解；引用、假设、复杂指代或部分取消不保证自动处理。无独立模型请求、无向量数据库。记忆作为数据附加到现有聊天，受独立和总字符预算限制。
+
+管理员使用 `/persona_memory add|list|show|history|search|delete`。删除清理记忆正文、修订和索引，保留无正文的去重回执；原 QQ 事件与 AstrBot 历史仍按原机制管理。默认不公开 self/global，不回填旧消息。数据库升为 **v5，十二张表**，更新前停插件备份数据。配置、按文件笔记和 QQ 步骤见 [CHANGES_v0.5.0.md](CHANGES_v0.5.0.md)。本轮未运行单元测试或生成安装包。
+
+以下版本小节保留各版本当时的结构及验证状态。
+
+## v0.4.0：聊天状态上下文与目录清理
+
+新增 `chat_context`，默认只在绑定私聊的已有聊天请求中生效。附加需求、VAD、活跃活动和精确匹配当前会话的近期反馈；保留原人设、历史、用户提问及工具。固定约束与动态数据分离，总字符预算默认 1000，不独立调用模型。
+
+`/persona_context now` 只读预览当前拟注入内容，`/persona_context last` 查看本次加载实际注入的最近内容。自然变化只做纯投影，不因预览或聊天装配增加状态版本。无会话归属的旧反馈不公开、不回填。默认群聊不注入；显式开启后还需绑定群且本次明确唤醒。
+
+数据库升级到 **v4，七张表**，新增会话反馈指针及活动状态索引。升级后旧版不能直接打开该库，需回退时使用升级前数据备份。依赖不变，没有运行测试或生成安装包。清理 23 个未实现的空占位文件，当前目录见 [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md)。
+
+以下版本小节保留各版本发布时的说明（如“数据库 v3”），不代表当前结构。
 
 ## v0.3.2：聊天总开关与时间戳追溯
 
@@ -66,7 +104,7 @@ ActivityFeedback 新增 task/experience、scope、evaluation_mode、context，�
 
 ## 本地规则评价与阶段反馈（v0.2.0）
 
-默认评价采用本地规则并开启，不主动调用大模型。直接评价时，原事件、评价回执、情绪冲击、状态和下一条情绪计划在同一事务保存；v0.3.0 的 deferred 路径先原子保存原事件、预约和超时计划，随后原子提交唯一最终结果。失败整体回滚。重复原事件不会重复结算；旧消息不会被批量重新评价。数据库保留 v3 六张表，反馈与评价复用事件日志，没有新增评价任务表或依赖。
+默认评价采用本地规则并开启，不主动调用大模型。直接评价时，原事件、评价回执、情绪冲击、状态和下一条情绪计划在同一事务保存；v0.3.0 的 deferred 路径先原子保存原事件、预约和超时计划，随后原子提交唯一最终结果。失败整体回滚。重复原事件不会重复结算；旧消息不会被批量重新评价。该版本使用 v3 六张表；当前 v0.5.3 为 v6，反馈与评价仍复用事件日志，没有独立评价任务表。
 
 聊天仅处理绑定范围中的私聊、或明确指向机器人的群聊。默认覆盖感谢、赞扬、攻击、道歉、聊天邀请与友善表情；一条消息最多选一条规则。引用、部分否定/反讽标记、正负信号混杂时保守地不施加冲击。这是短语规则，不能完整理解语境和反讽。相同会话、发送者、规则与规范化文本默认冷却 30 秒，冷却跨重载保存。每轴默认限幅 ±0.1，具体幅度和短语可在 evaluation 中配置，默认值尚未调优。
 
@@ -426,7 +464,7 @@ async def apply_evaluated_emotion(storage, runtime, original_event):
 
 `SelectionPolicy` 默认紧迫阈值为 60，四项权重均为 1；这些是可调整的示例参数，没有经过调优。精力与饱食度的压力为 `100 - value`，无聊度与社交需求的压力为 `value`。候选必须至少缓解一项达到阈值且权重非零的需求；净分数必须大于 0。分数为各项 `权重 × [(当前压力/100)² - (完成后压力/100)²]` 之和，完成后值先限制在 0～100。因此副作用会扣分，无法生效的溢出收益不计分。同分按定义 ID 排序，结果不依赖传入顺序。全零权重或没有正收益时保持空闲，不强制选活动。
 
-只有支持 simulated、预计时长已知且有完成需求效果的定义参与本轮选择。目录由宿主显式提供，执行器也必须预先注册。当前不自动读取 `config/activities.yaml`，不自动尝试真实或混合模式，不发送群消息。
+只有支持 simulated、预计时长已知且有完成需求效果的定义参与本轮选择。目录由宿主显式提供，执行器也必须预先注册。当前活动目录来自 AstrBot 的 simulation 配置，不自动尝试真实或混合模式，不发送群消息。
 
 `application/autonomy.py` 的 `AutonomousActivityService` 负责接线：
 
@@ -562,6 +600,8 @@ selector = ActivitySelector(
 
 ### 4.3 认知与记忆系统
 
+下表为目标职责。当前实现评价协议/规则、聊天上下文及会话记忆第一版；反思、自动叙事和完整语义记忆尚未实现。
+
 | 组件 | 职责 |
 | --- | --- |
 | `AppraisalEngine` | 评价事件的情绪、关系和记忆意义 |
@@ -573,6 +613,8 @@ selector = ActivitySelector(
 模型输出评价或候选事实，不输出可直接执行的数据库修改命令。游戏观察记录死亡一次，叙事不能改成三次；只观察了视频前五分钟，不能标记为完整观看。反思不得再次结算已经由原始事件产生的情绪或需求收益。
 
 ### 4.4 社交与表达系统
+
+下表为目标职责。当前复用 AstrBot 的被动聊天，没有实现主动表达、话题追踪或承诺管理。
 
 | 组件 | 职责 |
 | --- | --- |
@@ -722,7 +764,7 @@ async with PersonaStore(SQLiteStorage(path)) as storage:
 | `commit_proposal(proposal, settled_at=...)` | 从数据库读取当前状态，在事务中结算并保存结果 |
 | `start_needs_clock(agent_id, rates=..., now=..., interval_seconds=60)` | 建立或找回需求时钟计划，不重置已保存状态 |
 
-当前数据库为 v3，包含六张表：`agent_states` 保存角色 ID、版本及最小状态 JSON；`agent_events` 保存事件 ID 与完整事件 JSON（包括本地评价和阶段反馈）；`state_settlements` 保存角色结算回执；`activity_instances` 保存固定活动定义与最新实例；`activity_commits` 保存活动原修订对应的请求和结果；`scheduled_events` 保存定时计划、状态与重试记录。
+当前数据库为 v6，包含十二张表：`agent_states` 保存角色 ID、版本及最小状态 JSON；`agent_events` 保存事件 ID 与完整事件 JSON（包括本地评价和阶段反馈）；`state_settlements` 保存角色结算回执；`activity_instances` 保存固定活动定义与最新实例；`activity_commits` 保存活动原修订对应的请求和结果；`scheduled_events` 保存定时计划、状态与重试记录；`feedback_heads` 保存角色/会话到最新反馈事件的指针。活动表增加状态索引，原业务 JSON 不变。记忆另有 `memories` 当前记录、`memory_revisions` 修订、`memory_sources` 来源关联、`memory_terms` 检索索引和 `memory_receipts` 无正文去重回执；记忆整理不增加角色状态版本。
 
 一次新提案的提交顺序为：
 
@@ -1045,7 +1087,7 @@ TimeScheduler 到期投递 → ActivityService.handle_event
 
 应用层 `PersonaStore.open()` 会修复旧版本遗留的“当前 tick 已 failed，活动仍 running”数据；直接打开 SQLite 适配器不会执行活动规则。修复使用原最终失败时间，重复应用启动不会重复增加活动修订或反馈。失败活动是终态，需要重新尝试时创建新活动实例；当前不自动重置失败计划，也不采用无限重试。
 
-`PersonaStore.commit_activity_result()` 的计划及触发事件参数是可选的。提供下一次计划时，由活动业务规则重新核对候选实例与计划；提供触发 tick 时，还核对原活动快照、原持久化计划和推进间隔。相同提交重试必须保留这两个可选参数，不能切换成不同的提交内容。自动管理的活动应通过 `ActivityService` 控制；绕过入口直接推进实例却不保存下一次计划，可能使旧 tick 过期后失去自动推进链。`ActivityService` 只依赖 `activity/ports.py` 的 `ActivityStore` 协议。数据库现为 v3 六张表；需求时钟新增的可选 JSON 字段可兼容旧记录，无需批量数据迁移或新增依赖。
+`PersonaStore.commit_activity_result()` 的计划及触发事件参数是可选的。提供下一次计划时，由活动业务规则重新核对候选实例与计划；提供触发 tick 时，还核对原活动快照、原持久化计划和推进间隔。相同提交重试必须保留这两个可选参数，不能切换成不同的提交内容。自动管理的活动应通过 `ActivityService` 控制；绕过入口直接推进实例却不保存下一次计划，可能使旧 tick 过期后失去自动推进链。`ActivityService` 只依赖 `activity/ports.py` 的 `ActivityStore` 协议。当前数据库为 v6 十二张表；需求时钟的可选 JSON 字段仍兼容旧记录。v4 结构迁移及活动状态索引回填见本版说明。
 
 活动执行含数据库副作用，不能把 `handle_event` 注册成只计算提案的 `EventRouter` 处理函数。仅投递活动 tick 时，可以直接将它作为调度回调；同一角色还有其他定时事件时，应使用一个调度器，在回调入口分发：
 
@@ -1083,7 +1125,7 @@ AgentState
 └── MemoryState：情景记忆、语义记忆、叙事事实
 ```
 
-以上为完整目标结构。当前 `core/state.py` 只实现最小 `AgentState`，`persona/needs.py` 实现嵌套的 `NeedState`，人格、情绪、活动、社交与记忆状态后续逐步加入。
+以上为完整目标结构。当前 `core/state.py` 只实现最小 `AgentState`，`persona/needs.py` 实现嵌套的 `NeedState`，情绪已作为可选 `EmotionState` 接入；活动实例独立持久化。会话记忆独立持久化，不嵌入角色状态；完整人格与社交状态仍待后续实现。
 
 | 当前状态字段 | 含义 |
 | --- | --- |
@@ -1092,6 +1134,7 @@ AgentState
 | `updated_at` | 必填的带时区更新时间，保存为 UTC；加载时不重置 |
 | `needs_updated_at` | 独立的自然需求时间游标，默认 `None` 表示尚未建立基线 |
 | `version` | 非负整数状态修订号，初始默认 0；后续由结算器成功提交时递增 |
+| `emotion` | 可选情绪状态，含基线、心情、瞬时 VAD 及独立游标 |
 
 需求值采用 0～100 的统一刻度，接受整数和浮点数；精力 `energy`、饱食度 `satiety` 越高越充足，无聊度 `boredom`、社交需求 `social_need` 越高越需要满足。模型拒绝越界值、非有限数值、布尔值和数值字符串，不静默截断。初始值、变化速率与行为阈值由后续配置及策略确定。
 
@@ -1136,111 +1179,36 @@ new_state = settle_state(
 | `inferred` | 模型推断，不能自动提升为确定事实 |
 | `confirmed` | 用户明确确认的信息，仍需保留确认来源与作用域 |
 
-第一版采用 SQLite FTS 与重要记忆召回，向量检索可选。召回可综合相关性、近期性、重要性和激活度，并限制重复召回的强化。高级巩固与分级遗忘留待后续实现。
+当前会话记忆使用普通 SQLite 索引、类型/日期过滤和中文双字辅助召回；没有部署 FTS 或向量服务。后续根据实际召回效果考虑语义检索。召回可综合相关性、近期性、重要性和激活度，并限制重复召回的强化。高级巩固与分级遗忘留待后续实现。
 
 权限过滤必须覆盖检索、上下文组装、总结和输出。私聊信息默认不得在群内披露，包括通过摘要间接披露。记忆管理需提供相关记录的查看、更正与删除能力；具体命令及授权流程在接口阶段落实。
 
 ## 9. 工程目录
 
-以下目录已建立，各包包含 `__init__.py`。当前已实现基础模型、内存结算、SQLite 角色与活动持久化、事件路由、单角色运行时、执行器协议、模拟执行器、活动调用管理和模拟活动服务，其余业务模块仍为职责占位。`ActivityService` 位于 `activity/service.py`；`StateCoordinator` 和 `ResponseGenerator` 是逻辑组件，具体文件归属可在不改变职责边界的前提下细化。
-
-当前项目根目录为 `persona_agent/`；`metadata.yaml` 中的 `name: astrbot_plugin_persona` 是插件标识，两者含义不同。
+当前目录已经按实际代码复核，完整树、删除文件清单和分层理由见 [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md)。原始目标架构图仍用于设计参考，不是当前完成功能图。
 
 ```text
-persona_agent/
-├── README.md
-├── main.py                     # AstrBot 入口
-├── metadata.yaml
-├── _conf_schema.json
-├── requirements.txt            # 当前模块依赖
-├── .gitignore
-├── assets/images/              # 架构图
-├── core/
-│   ├── runtime.py               # 单角色队列与生命周期编排
-│   ├── events.py                # 统一事件
-│   ├── state.py                 # 最小角色状态
-│   ├── ports.py                 # 核心运行时的类型化存储协议
-│   ├── persistence.py           # 状态、事件、提案与投递的事务内规则
-│   ├── router.py                # 精确事件路由与处理结果校验
-│   ├── arbiter.py
-│   ├── scheduler.py             # 持久化单次定时事件与重试投递
-│   └── settlement.py            # 提案模型与内存结算
-├── persona/
-│   ├── profile.py
-│   ├── emotion.py
-│   ├── needs.py                 # 需求模型、自然速率与纯 NeedEngine
-│   └── relationship.py
-├── activity/
-│   ├── models.py               # 活动定义、实例与模式状态枚举
-│   ├── rewards.py              # 固定定义的完成效果提案规则
-│   ├── manager.py              # 生命周期编排、能力与结果检查
-│   ├── service.py              # 模拟活动控制与持久化自动推进
-│   ├── ports.py                # 活动服务的业务提交协议
-│   ├── persistence.py          # 活动修订、完成结算与 tick 耗尽规则
-│   ├── ticks.py                # 内部推进事件与稳定单次计划
-│   ├── selector.py
-│   ├── interrupt.py
-│   ├── executor.py
-│   ├── registry.py             # 按活动定义和模式注册执行器
-│   └── executors/
-│       └── simulated.py
-├── cognition/
-│   ├── llm_client.py
-│   ├── appraisal.py
-│   ├── reflection.py
-│   ├── narrative.py
-│   └── prompt_builder.py
-├── memory/
-│   ├── manager.py
-│   ├── retrieval.py
-│   ├── consolidation.py
-│   └── story_facts.py
-├── social/
-│   ├── topic.py
-│   ├── policy.py
-│   ├── expression.py
-│   └── commitment.py
-├── application/
-│   ├── needs.py                 # 需求 tick、提案处理器与计划构造
-│   └── persistence.py           # PersonaStore：跨业务事务协调与启动修复
-├── persistence/
-│   ├── ports.py                 # 通用行操作与 UnitOfWork 契约
-│   ├── errors.py                # 共享持久化契约异常
-│   └── serialization.py         # 无业务依赖的序列化辅助
-├── infrastructure/
-│   ├── storage.py               # SQLite 连接、schema 迁移与原始行事务
-│   ├── outbox.py
-│   ├── permissions.py
-│   └── observability.py
-├── config/
-│   ├── persona.yaml
-│   ├── activities.yaml
-│   └── policies.yaml
-└── tests/
-    ├── README.md               # 手动测试说明
-    ├── test_events.py          # 事件模型测试
-    ├── test_state.py           # 角色与需求状态测试
-    ├── test_proposals.py       # 变更提案与需求变化量测试
-    ├── test_settlement.py      # 内存结算测试
-    ├── test_storage.py         # SQLite 持久化与事务去重测试
-    ├── test_router.py          # 事件路由与存储衔接测试
-    ├── test_runtime.py         # 队列、生命周期与重试编排测试
-    ├── test_activity_models.py # 活动定义与实例测试
-    ├── test_simulated_executor.py # 模拟执行器与协议测试
-    ├── test_activity_manager.py # 注册与活动编排测试
-    ├── test_activity_storage.py # 活动事务保存与数据库迁移测试
-    ├── test_activity_rewards.py # 完成效果、补结算与原子性测试
-    ├── test_scheduler.py       # 定时投递、恢复、重试与 v3 迁移测试
-    ├── test_activity_service.py # 模拟活动自动推进、恢复与原子性测试
-    ├── test_persistence_layers.py # 依赖方向、独立适配器及内存替换测试
-    └── test_need_engine.py      # 需求时间推进、重复处理与事务回滚
+main.py                  AstrBot 适配、聊天钩子与管理员命令
+application/             宿主组装、业务协调、事务与上下文读取
+core/                    事件、状态、路由、运行时、调度、仲裁和结算
+activity/                定义/实例、执行器、选择、反馈、生命周期与持久化
+persona/                 纯需求、情绪模型及动力计算
+cognition/               规则与结构化体验评价、上下文纯装配
+memory/                  会话记忆、来源、修订、近期归并与本地检索
+persistence/             通用存储协议、错误和序列化
+infrastructure/          SQLite 适配与结构迁移
+persona_agent/           业务 namespace 入口，兼容插件嵌套加载
+assets/                  原始目标架构图
+tests/                   用户手动运行的验证与临时旧库夹具
 ```
 
-`metadata.yaml` 是元信息草稿，作者与仓库地址待补齐；`_conf_schema.json` 与三个 YAML 配置暂为空映射，具体字段随接口设计确定。事件模块依赖已记录于 `requirements.txt`，手动测试步骤见 [tests/README.md](tests/README.md)；插件安装流程待接入 AstrBot 后补充。
+配置入口为 `_conf_schema.json` 与 `application/settings.py`，不再保留未被读取的空 YAML。v0.4.0 清理了 `memory/`、`social/` 等纯占位；v0.5.0 按实际职责建立记忆模型、提取、检索及事务规则，社交等未来模块仍按需建立。多个 persistence 文件各有事务职责，不是重复数据库实现。插件标识 `astrbot_plugin_persona` 与业务命名空间 `persona_agent` 含义不同，需要保留。
+
+`metadata.yaml` 的作者与仓库地址待发布者填写；打包清单为 [PACKAGING_FILES_v0.5.3.txt](PACKAGING_FILES_v0.5.3.txt)，测试步骤见 [tests/README.md](tests/README.md)。
 
 ## 10. 第一版范围与未来扩展
 
-第一版交付目标：固定人格与软层属性结构；三维情绪和需求；活动选择、进度、中断与恢复；模拟执行器与叙事事实；群聊仲裁和表达阀门；事件日志、SQLite 与重启恢复；基础关系档案与重要记忆召回；本地规则事件评价与按需模型回复生成。
+以下是长期 v1.0 交付目标，不是本版完成清单：固定人格与软层属性结构；三维情绪和需求；活动选择、进度、中断与恢复；模拟执行器与叙事事实；群聊仲裁和表达阀门；事件日志、SQLite 与重启恢复；基础关系档案与重要记忆召回；本地规则事件评价与按需模型回复生成。
 
 优先完成少量活动的完整生命周期，不以活动名称数量作为完成标准。第一版不宣称具备真实视频观看、游戏控制或完整真实环境 Agent 能力。
 
@@ -1254,9 +1222,9 @@ persona_agent/
 | 语言与调度 | Python 3.10+、`asyncio` |
 | 状态与数据访问 | SQLite、`aiosqlite` |
 | 数据校验 | Pydantic |
-| 模型 | DeepSeek API |
-| 检索 | SQLite FTS，可选向量检索 |
-| 配置 | AstrBot 配置与 YAML |
+| 模型 | 复用 AstrBot 配置的提供商；不维护独立客户端 |
+| 检索 | 未来拟用 SQLite FTS，可选向量检索；当前未实现 |
+| 配置 | AstrBot 配置 + Pydantic 严格校验 |
 | 日志 | Python logging / JSON 日志 |
 | 真实活动扩展 | 独立 `ActivityExecutor` 插件 |
 
@@ -1284,7 +1252,7 @@ persona_agent/
 | 1. 接口与数据 | 定义六个核心对象、能力声明、错误语义、表结构与版本迁移 | 来源、身份、作用域、因果和状态所有权明确 |
 | 2. 内核闭环 | 实现队列、路由、调度、结算、存储与启动恢复 | 重复事件不重复结算；异常不产生部分状态提交 |
 | 3. 模拟活动 | 接入人格、需求、情绪与少量模拟活动 | 选择、推进、中断、恢复、完成形成闭环 |
-| 4. 社交认知 | 接入 AstrBot、DeepSeek、话题、仲裁、表达与承诺 | 发言受预算控制；沉默可解释；模型异常可回退 |
+| 4. 社交认知 | 复用 AstrBot 模型请求，逐步增加话题、表达与承诺 | 发言受预算控制；沉默可解释；模型异常可回退 |
 | 5. 关系与记忆 | 重要记忆召回、基础关系、来源追溯与权限过滤 | 私聊不泄露到群聊；叙事不覆盖事实 |
 | 6. v1 验证 | 重启、超时、重复消息、发送失败与活动恢复测试 | 核心状态连续，外部结果可追踪，运行开销可观测 |
 | 7. 后续扩展 | 按需增加真实或混合执行器与高级记忆能力 | 不改变内核职责，不混淆执行来源 |
