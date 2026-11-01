@@ -9,10 +9,10 @@ from uuid import NAMESPACE_URL, uuid5
 
 from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator
 
-from activity.executor import ActivityContext, ActivityExecutionResult
-from activity.models import ActivityInstance, ActivityRecord, ActivityStatus, ExecutionMode
-from core.events import AgentEvent, EventProvenance
-from core.scheduler import ScheduledEvent, ScheduleRecord, ScheduleStatus
+from .executor import ActivityContext, ActivityExecutionResult
+from .models import ActivityInstance, ActivityRecord, ActivityStatus, ExecutionMode
+from ..core.events import AgentEvent, EventProvenance
+from ..core.scheduler import ScheduledEvent, ScheduleRecord, ScheduleStatus
 
 
 TICK_EVENT_TYPE = "INTERNAL.activity_tick"

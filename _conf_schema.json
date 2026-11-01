@@ -333,5 +333,34 @@
       }
     },
     "hint": "聊天与活动共享一次性评价。needs 仅影响无聊/社交需求，物理需求仍由执行事实决定；已有完成效果占用的需求轴不再奖励。semantic 使用 activity_effects 相同先验再柔性修正。超过 max_effect_age_seconds 的反馈只归档，不补发效果。无独立模型请求。"
+  },
+  "chat_context": {
+    "description": "聊天状态上下文（复用已有模型请求）",
+    "type": "dict",
+    "default": {
+      "enabled": true,
+      "private_only": true,
+      "include_feedback": true,
+      "max_chars": 1000,
+      "max_feedback_chars": 160,
+      "feedback_max_age_seconds": 300
+    },
+    "hint": "默认只对已绑定私聊生效；附加字符数有限。反馈仅使用精确匹配当前 scope_id 的新反馈，无归属旧摘要不共享。不会主动调用模型。/persona_context now 或 last 可预览。保存后重载。"
+  },
+  "memory": {
+    "description": "会话记忆（本地规则与近期归并）",
+    "type": "dict",
+    "default": {
+      "enabled": true,
+      "auto_capture": true,
+      "private_only": true,
+      "merge_window_seconds": 3600,
+      "candidate_limit": 20,
+      "recall_limit": 3,
+      "max_context_chars": 600,
+      "utc_offset_minutes": 480,
+      "recall_half_life_days": 30
+    },
+    "hint": "默认仅绑定私聊：自动提取明确第一人称计划/偏好，不调用模型。归并候选优先最近 1 小时内的 20 条，时间近不单独作为覆盖依据。相对日期按来源时间和 UTC 偏移解析；保存后重载。/persona_memory 管理。 召回综合归一化相关度、重要度和时间衰减，半衰期默认 30 天；每词候选有界并批量评分。 索引异常可用 /persona_memory pending 查看当前会话待修复 ID。"
   }
 }

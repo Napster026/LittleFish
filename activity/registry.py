@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from activity.executor import ActivityExecutionError, ActivityExecutor, ExecutorCapabilities
-from activity.models import ActivityDefinition, ExecutionMode
+from .executor import ActivityExecutionError, ActivityExecutor, ExecutorCapabilities
+from .models import ActivityDefinition, ExecutionMode
 
 
 class ExecutorRegistryError(RuntimeError):

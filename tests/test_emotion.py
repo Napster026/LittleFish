@@ -10,7 +10,8 @@ from pydantic import ValidationError
 
 from persona_agent.application.emotion import (
     EMOTION_IMPULSE_EVENT_TYPE, EMOTION_TICK_EVENT_TYPE, EmotionEventHandler,
-    build_emotion_initialization, build_emotion_impulse, build_emotion_proposal,
+    build_emotion_initialization, build_emotion_impulse, build_emotion_interval_update,
+    build_emotion_proposal, build_emotion_tick, parse_emotion_event,
 )
 from persona_agent.application.needs import NEEDS_TICK_EVENT_TYPE, NeedTickHandler
 from persona_agent.application.persistence import PersonaStore
@@ -44,6 +45,12 @@ def emotion(**changes):
 
 
 class EmotionEngineTests(unittest.TestCase):
+    def test_default_tick_interval_is_five_minutes(self):
+        rules = EmotionDynamics(emotion_half_life_seconds=300, mood_half_life_seconds=7200, mood_impulse_ratio=.1)
+        self.assertEqual(rules.tick_interval_seconds, 300)
+        plan = build_emotion_tick("persona-001", from_at=TIME, dynamics=rules)
+        self.assertEqual(plan.due_at, TIME + timedelta(seconds=300))
+
     def test_half_life_coupled_regression_and_partition_invariance(self):
         engine = EmotionEngine()
         initial = emotion()
@@ -131,6 +138,71 @@ class EmotionIntegrationTests(unittest.IsolatedAsyncioTestCase):
         if save_source:
             await self.store.record_event(source)
         return build_emotion_impulse(self.agent, source, EmotionImpulse(valence=0.2, arousal=0, dominance=0))
+
+    async def test_interval_change_preserves_rules_and_ignores_old_tick_at_same_cursor(self):
+        old_plan = await self.boot()
+        before = await self.read()
+        plan = await self.store.start_emotion_clock(self.agent, now=self.now, tick_interval_seconds=300)
+        changed = await self.read()
+        self.assertEqual(changed.version, before.version+1)
+        self.assertEqual(changed.emotion.current, before.emotion.current)
+        self.assertEqual(changed.emotion.mood, before.emotion.mood)
+        self.assertEqual(changed.emotion.baseline, before.emotion.baseline)
+        self.assertEqual(changed.emotion.dynamics.model_dump(exclude={"tick_interval_seconds"}),
+                         before.emotion.dynamics.model_dump(exclude={"tick_interval_seconds"}))
+        self.assertEqual(plan.schedule.due_at, TIME+timedelta(seconds=300))
+        self.assertNotEqual(plan.schedule.schedule_id, old_plan.schedule.schedule_id)
+        await self.store.close()
+        await self.store.open()
+        self.assertEqual(await self.store.start_emotion_clock(self.agent, now=self.now, tick_interval_seconds=300), plan)
+        self.assertEqual(await self.read(), changed)
+        self.now = TIME+timedelta(seconds=10)
+        await self.scheduler.run_due()
+        self.assertEqual(await self.read(), changed)
+        self.assertIsNone(await self.store.get_committed_proposal(self.agent, old_plan.schedule.event.event_id))
+        self.now = TIME+timedelta(seconds=300)
+        await self.scheduler.run_due()
+        settled = await self.read()
+        self.assertEqual(settled.version, changed.version+1)
+        self.assertEqual(settled.emotion, EmotionEngine().advance(changed.emotion, to_at=self.now).state)
+
+    async def test_interval_change_transaction_rollback_and_parameter_guard(self):
+        await self.boot()
+        before = await self.read()
+        self.now += timedelta(seconds=5)
+        update = build_emotion_interval_update(before, 300, at=self.now)
+        with patch.object(CorePersistence, "create_schedule", AsyncMock(side_effect=RuntimeError("write failed"))):
+            with self.assertRaises(RuntimeError):
+                await self.store.start_emotion_clock(self.agent, now=self.now, tick_interval_seconds=300)
+        self.assertEqual(await self.read(), before)
+        self.assertIsNone(await self.store.get_event(update.event_id))
+        proposal = build_emotion_proposal(update, before, to_at=self.now)
+        wrong_rules = EmotionDynamics(**{**proposal.emotion_change.state.dynamics.model_dump(),
+                                        "emotion_half_life_seconds": 11})
+        tampered = StateChangeProposal(**{**proposal.model_dump(), "emotion_change": {
+            **proposal.emotion_change.model_dump(), "state": {
+                **proposal.emotion_change.state.model_dump(), "dynamics": wrong_rules}}})
+        with self.assertRaises(EmotionTimeConflictError):
+            settle_state(before, tampered, settled_at=self.now)
+        await self.store.start_emotion_clock(self.agent, now=self.now, tick_interval_seconds=300)
+        after = await self.read()
+        self.assertEqual(after.emotion.current, EmotionEngine().advance(before.emotion, to_at=self.now).state.current)
+        self.assertEqual(after.emotion.dynamics.tick_interval_seconds, 300)
+
+    async def test_legacy_tick_identity_recovers_and_settles(self):
+        agent = "legacy-persona"
+        old_state = AgentState(agent_id=agent, updated_at=TIME, needs=self.initial.needs, emotion=emotion())
+        await self.store.create_state(old_state)
+        legacy = build_emotion_tick(agent, from_at=TIME, dynamics=old_state.emotion.dynamics, legacy_identity=True)
+        await self.store.create_schedule(legacy)
+        self.assertEqual(parse_emotion_event(legacy.event).dynamics, old_state.emotion.dynamics)
+        recovered = await self.store.start_emotion_clock(agent, now=self.now)
+        self.assertEqual(recovered.schedule, legacy)
+        self.now += timedelta(seconds=10)
+        await self.store.record_event(legacy.event)
+        proposal = build_emotion_proposal(legacy.event, old_state, to_at=self.now)
+        settled = await self.store.commit_proposal(proposal, settled_at=self.now)
+        self.assertEqual(settled.emotion, EmotionEngine().advance(old_state.emotion, to_at=self.now).state)
 
     async def test_explicit_initialization_and_tick_recovery(self):
         self.assertIsNone((await self.read()).emotion)

@@ -6,14 +6,14 @@ import asyncio
 from collections.abc import Callable
 from datetime import datetime, timezone
 
-from activity.executor import ActivityContext
-from activity.manager import ActivityManager
-from activity.models import ActivityRecord, ActivityStatus, ExecutionMode
-from activity.ports import ActivityStore
-from activity.ticks import ActivityTick, build_activity_tick, parse_activity_tick
-from core.events import AgentEvent
-from core.scheduler import ScheduleStatus, normalize_schedule_time
-from persistence.errors import ActivityNotFoundError
+from .executor import ActivityContext
+from .manager import ActivityManager
+from .models import ActivityRecord, ActivityStatus, ExecutionMode
+from .ports import ActivityStore
+from .ticks import ActivityTick, build_activity_tick, parse_activity_tick
+from ..core.events import AgentEvent
+from ..core.scheduler import ScheduleStatus, normalize_schedule_time
+from ..persistence.errors import ActivityNotFoundError
 
 
 class ActivityServiceError(RuntimeError):

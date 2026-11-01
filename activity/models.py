@@ -10,7 +10,7 @@ from pydantic import (
     AwareDatetime, BaseModel, ConfigDict, Field, StrictStr, field_validator, model_validator,
 )
 
-from persona.needs import NeedDelta
+from ..persona.needs import NeedDelta
 
 
 class ExecutionMode(str, Enum):

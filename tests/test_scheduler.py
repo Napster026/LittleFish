@@ -1,5 +1,7 @@
 """持久化定时事件、重试、运行时投递与结构迁移测试，由开发者手动运行。"""
 
+from schema_fixtures import restore_v3_layout
+
 import asyncio
 import sqlite3
 import unittest
@@ -355,6 +357,7 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
         saved = await self.storage.commit_activity_result("start", context, result)
         await self.storage.close()
         with closing(sqlite3.connect(self.path)) as connection:
+            restore_v3_layout(connection)
             connection.execute("DROP TABLE scheduled_events")
             connection.execute("PRAGMA user_version = 2")
             connection.commit()
@@ -364,11 +367,12 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.storage.get_event(result.events[0].event_id), result.events[0])
         await self.storage.create_schedule(self.event())
         with closing(sqlite3.connect(self.path)) as connection:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 3)
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 6)
 
     async def test_failed_v2_upgrade_rolls_back_new_table_and_version(self):
         await self.storage.close()
         with closing(sqlite3.connect(self.path)) as connection:
+            restore_v3_layout(connection)
             connection.execute("DROP TABLE scheduled_events")
             connection.execute("PRAGMA user_version = 2")
             connection.execute("CREATE INDEX scheduled_due_idx ON agent_states (agent_id)")

@@ -3,9 +3,10 @@
 import json
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
+from typing import Annotated
 from uuid import NAMESPACE_URL, uuid5
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, StrictStr, field_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StrictStr, field_validator
 
 from ..core.events import AgentEvent, EventProvenance
 from ..core.scheduler import ScheduledEvent, normalize_schedule_time
@@ -18,6 +19,7 @@ from ..persona.needs import parse_need_time
 EMOTION_TICK_EVENT_TYPE = "INTERNAL.emotion_tick"
 EMOTION_IMPULSE_EVENT_TYPE = "INTERNAL.emotion_impulse"
 EMOTION_INIT_EVENT_TYPE = "SYSTEM.emotion_initialized"
+EMOTION_INTERVAL_EVENT_TYPE = "SYSTEM.emotion_interval_changed"
 EMOTION_SOURCE = "persona.emotion"
 
 
@@ -60,10 +62,43 @@ class EmotionInitialization(_EmotionSpec):
     state: EmotionState
 
 
-def build_emotion_tick(agent_id: str, *, from_at: datetime, dynamics: EmotionDynamics) -> ScheduledEvent:
+class EmotionIntervalUpdate(_EmotionSpec):
+    expected_version: Annotated[int, Field(strict=True, ge=0)]
+    from_at: AwareDatetime
+    dynamics: EmotionDynamics
+
+    @field_validator("from_at", mode="before")
+    @classmethod
+    def time(cls, value):
+        return parse_need_time(value)
+
+
+def _interval_event(spec: EmotionIntervalUpdate, at: datetime) -> AgentEvent:
+    return AgentEvent(
+        event_id=_identifier("interval", spec.agent_id, str(spec.expected_version),
+                             str(spec.dynamics.tick_interval_seconds)),
+        event_type=EMOTION_INTERVAL_EVENT_TYPE, timestamp=at, source=EMOTION_SOURCE,
+        provenance=EventProvenance.OBSERVED, correlation_id=f"emotion:{spec.agent_id}",
+        payload=spec.model_dump(mode="json"),
+    )
+
+
+def build_emotion_interval_update(state: AgentState, interval_seconds: float, *, at: datetime) -> AgentEvent:
+    if state.emotion is None:
+        raise ValueError("请先初始化情绪")
+    dynamics = EmotionDynamics(**{**state.emotion.dynamics.model_dump(), "tick_interval_seconds": interval_seconds})
+    return _interval_event(EmotionIntervalUpdate(agent_id=state.agent_id, expected_version=state.version,
+        from_at=state.emotion.updated_at, dynamics=dynamics), normalize_schedule_time(at))
+
+
+def build_emotion_tick(agent_id: str, *, from_at: datetime, dynamics: EmotionDynamics,
+                       legacy_identity: bool = False) -> ScheduledEvent:
     spec = EmotionTick(agent_id=agent_id, from_at=from_at, dynamics=dynamics)
     due_at = spec.from_at + timedelta(seconds=spec.dynamics.tick_interval_seconds)
-    identifier = _identifier("tick", agent_id, spec.from_at.isoformat(timespec="microseconds"))
+    parts = [agent_id, spec.from_at.isoformat(timespec="microseconds")]
+    if not legacy_identity:
+        parts.append(str(spec.dynamics.tick_interval_seconds))
+    identifier = _identifier("tick", *parts)
     event = AgentEvent(
         event_id=identifier, event_type=EMOTION_TICK_EVENT_TYPE, timestamp=due_at,
         source=EMOTION_SOURCE, provenance=EventProvenance.OBSERVED,
@@ -98,11 +133,17 @@ def build_emotion_impulse(agent_id: str, source_event: AgentEvent, impulse: Emot
     ), source_event.timestamp)
 
 
-def parse_emotion_event(event: AgentEvent) -> EmotionTick | EmotionImpact | EmotionInitialization:
+def parse_emotion_event(event: AgentEvent) -> EmotionTick | EmotionImpact | EmotionInitialization | EmotionIntervalUpdate:
     event = AgentEvent.model_validate(event.model_dump())
     if event.event_type == EMOTION_TICK_EVENT_TYPE:
         spec = EmotionTick.model_validate(event.payload)
         expected = build_emotion_tick(spec.agent_id, from_at=spec.from_at, dynamics=spec.dynamics).event
+        if event != expected:
+            expected = build_emotion_tick(spec.agent_id, from_at=spec.from_at,
+                                          dynamics=spec.dynamics, legacy_identity=True).event
+    elif event.event_type == EMOTION_INTERVAL_EVENT_TYPE:
+        spec = EmotionIntervalUpdate.model_validate(event.payload)
+        expected = _interval_event(spec, event.timestamp)
     elif event.event_type == EMOTION_IMPULSE_EVENT_TYPE:
         spec = EmotionImpact.model_validate(event.payload)
         expected = _impact_event(spec, event.timestamp)
@@ -133,13 +174,28 @@ def build_emotion_proposal(
         if state.emotion is None:
             raise ValueError("请先显式启用情绪")
         engine = EmotionEngine()
-        if isinstance(spec, EmotionTick):
-            if spec.dynamics != state.emotion.dynamics:
-                raise ValueError("情绪计划规则与角色持久化规则不同")
+        if isinstance(spec, EmotionIntervalUpdate):
+            if spec.expected_version != state.version or spec.from_at != state.emotion.updated_at:
+                raise EmotionTimeConflictError("调整间隔所依据的角色版本或情绪游标已经变化")
+            if (spec.dynamics.model_dump(exclude={"tick_interval_seconds"})
+                    != state.emotion.dynamics.model_dump(exclude={"tick_interval_seconds"})):
+                raise ValueError("只允许单独修改检查间隔")
+            if spec.dynamics.tick_interval_seconds == state.emotion.dynamics.tick_interval_seconds:
+                raise ValueError("检查间隔没有变化")
+            advanced = engine.advance(state.emotion, to_at=to_at)
+            before = state.emotion if advanced is None else advanced.state
+            change = EmotionChange(from_at=state.emotion.updated_at, interval_change=True,
+                state=EmotionState(**{**before.model_dump(), "dynamics": spec.dynamics}))
+        elif isinstance(spec, EmotionTick):
             if spec.from_at < state.emotion.updated_at:
-                return None  # 事件冲击已推进游标，旧时钟链自然失效。
+                return None  # 冲击或配置调整已推进游标，旧链自然失效。
             if spec.from_at != state.emotion.updated_at:
                 raise EmotionTimeConflictError("情绪计划依据了尚未出现的游标")
+            if spec.dynamics != state.emotion.dynamics:
+                if (spec.dynamics.model_dump(exclude={"tick_interval_seconds"})
+                        == state.emotion.dynamics.model_dump(exclude={"tick_interval_seconds"})):
+                    return None  # 同一时刻切换间隔的旧计划，不再产生状态结算。
+                raise ValueError("情绪计划规则与角色持久化规则不同")
             change = engine.advance(state.emotion, to_at=to_at)
         else:
             change = engine.apply_impulse(state.emotion, spec.impulse, at=to_at)

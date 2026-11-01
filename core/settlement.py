@@ -7,9 +7,9 @@ from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator, model_validator
 
-from core.state import AgentState
-from persona.needs import NeedDelta, NeedState, NeedTimeAdvance
-from persona.emotion import EmotionChange
+from .state import AgentState
+from ..persona.needs import NeedDelta, NeedState, NeedTimeAdvance
+from ..persona.emotion import EmotionChange
 
 
 # noinspection PyNestedDecorators
@@ -109,15 +109,25 @@ def settle_state(
     emotion = state.emotion
     if proposal.emotion_change is not None:
         change = proposal.emotion_change
+        if change.interval_change and (
+            emotion is None or proposal.needs_delta is not None or proposal.needs_time is not None
+        ):
+            raise EmotionTimeConflictError("调整情绪检查间隔要求已有情绪，且不能混入需求变化")
         previous_time = None if emotion is None else emotion.updated_at
         if change.from_at != previous_time:
             raise EmotionTimeConflictError("情绪时间游标已经变化")
         if change.state.updated_at > settled_at_utc:
             raise SettlementTimeError("情绪时间游标不能晚于结算时间")
-        if emotion is not None and (
-            change.state.baseline != emotion.baseline or change.state.dynamics != emotion.dynamics
-        ):
-            raise EmotionTimeConflictError("情绪更新不能改变人格基线或动力参数")
+        if emotion is not None:
+            previous_rules = emotion.dynamics.model_dump()
+            next_rules = change.state.dynamics.model_dump()
+            if change.interval_change:
+                previous_rules.pop("tick_interval_seconds")
+                next_rules.pop("tick_interval_seconds")
+                if change.state.dynamics.tick_interval_seconds == emotion.dynamics.tick_interval_seconds:
+                    raise EmotionTimeConflictError("检查间隔未改变，不应提交配置变更")
+            if change.state.baseline != emotion.baseline or next_rules != previous_rules:
+                raise EmotionTimeConflictError("情绪更新不能改变人格基线或动力参数")
         emotion = change.state
     if proposal.needs_time is not None:
         if proposal.needs_time.from_at != needs_updated_at:

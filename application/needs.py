@@ -10,11 +10,11 @@ from uuid import NAMESPACE_URL, uuid5
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StrictStr, field_validator
 
-from core.events import AgentEvent, EventProvenance
-from core.scheduler import ScheduledEvent, normalize_schedule_time
-from core.settlement import NeedTimeConflictError, StateChangeProposal
-from core.state import AgentState
-from persona.needs import NeedEngine, NeedRates, parse_need_time
+from ..core.events import AgentEvent, EventProvenance
+from ..core.scheduler import ScheduledEvent, normalize_schedule_time
+from ..core.settlement import NeedTimeConflictError, StateChangeProposal
+from ..core.state import AgentState
+from ..persona.needs import NeedEngine, NeedRates, parse_need_time
 
 
 NEEDS_TICK_EVENT_TYPE = "INTERNAL.needs_tick"

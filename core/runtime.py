@@ -7,11 +7,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from core.events import AgentEvent
-from core.ports import AgentStore
-from core.router import EventRouter
-from core.state import AgentState
-from persistence.errors import StateNotFoundError
+from .events import AgentEvent
+from .ports import AgentStore
+from .router import EventRouter
+from .state import AgentState
+from ..persistence.errors import StateNotFoundError
 
 
 class AgentRuntimeError(RuntimeError):

@@ -7,8 +7,8 @@ from typing import Annotated, Any
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StrictStr, field_validator, model_validator
 
-from persona.needs import NeedState, parse_need_time
-from persona.emotion import EmotionState
+from ..persona.needs import NeedState, parse_need_time
+from ..persona.emotion import EmotionState
 
 
 # noinspection PyNestedDecorators

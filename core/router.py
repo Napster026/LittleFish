@@ -5,9 +5,9 @@ from __future__ import annotations
 import inspect
 from collections.abc import Awaitable, Callable
 
-from core.events import AgentEvent
-from core.settlement import StateChangeProposal
-from core.state import AgentState
+from .events import AgentEvent
+from .settlement import StateChangeProposal
+from .state import AgentState
 
 
 EventHandler = Callable[[AgentEvent, AgentState], Awaitable[StateChangeProposal | None]]

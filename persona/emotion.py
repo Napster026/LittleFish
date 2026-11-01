@@ -4,7 +4,7 @@ import math
 from datetime import datetime
 from typing import Annotated, Any
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 
 from .needs import parse_need_time
 
@@ -46,7 +46,7 @@ class EmotionDynamics(BaseModel):
     emotion_half_life_seconds: Annotated[float, Field(ge=0.001, le=31536000, allow_inf_nan=False)]
     mood_half_life_seconds: Annotated[float, Field(ge=0.001, le=31536000, allow_inf_nan=False)]
     mood_impulse_ratio: Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
-    tick_interval_seconds: Annotated[float, Field(ge=0.001, le=86400, allow_inf_nan=False)] = 60.0
+    tick_interval_seconds: Annotated[float, Field(ge=0.001, le=86400, allow_inf_nan=False)] = 300.0
 
     @field_validator("emotion_half_life_seconds", "mood_half_life_seconds", "mood_impulse_ratio",
                      "tick_interval_seconds", mode="before")
@@ -88,6 +88,7 @@ class EmotionChange(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     from_at: AwareDatetime | None
     state: EmotionState
+    interval_change: StrictBool = False
 
     @field_validator("from_at", mode="before")
     @classmethod

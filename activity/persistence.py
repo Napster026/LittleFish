@@ -4,22 +4,22 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from activity.executor import ActivityContext, ActivityExecutionResult
-from activity.manager import ActivityManager
-from activity.models import ActivityDefinition, ActivityInstance, ActivityRecord, ActivityStatus, ExecutionMode
-from activity.rewards import ActivityNotCompletedError, InvalidCompletionEventError, build_completion_proposal
-from activity.ticks import build_activity_tick, build_tick_exhaustion_result, parse_activity_tick
-from core.events import AgentEvent
-from core.persistence import CorePersistence
-from core.scheduler import ScheduledEvent, ScheduleRecord, ScheduleStatus
-from core.settlement import SettlementTimeError
-from core.state import AgentState
-from persistence.errors import (
+from .executor import ActivityContext, ActivityExecutionResult
+from .manager import ActivityManager
+from .models import ActivityDefinition, ActivityInstance, ActivityRecord, ActivityStatus, ExecutionMode
+from .rewards import ActivityNotCompletedError, InvalidCompletionEventError, build_completion_proposal
+from .ticks import build_activity_tick, build_tick_exhaustion_result, parse_activity_tick
+from ..core.events import AgentEvent
+from ..core.persistence import CorePersistence
+from ..core.scheduler import ScheduledEvent, ScheduleRecord, ScheduleStatus
+from ..core.settlement import SettlementTimeError
+from ..core.state import AgentState
+from ..persistence.errors import (
     ActivityAlreadyExistsError, ActivityCommitConflictError, ActivityDefinitionConflictError,
     ActivityNotFoundError, ActivityVersionConflictError, ProposalConflictError, StateNotFoundError, StorageError,
 )
-from persistence.ports import PersistenceSession
-from persistence.serialization import canonical_json, text_column
+from ..persistence.ports import PersistenceSession
+from ..persistence.serialization import canonical_json, text_column
 
 
 class ActivityPersistence:
@@ -40,6 +40,7 @@ class ActivityPersistence:
         if (
             record.instance.agent_id != agent_id or record.instance.activity_id != activity_id
             or record.instance.revision != row["revision"]
+            or row.get("status", "unknown") not in ("unknown", record.instance.status.value)
         ):
             raise StorageError("活动索引字段与实例 JSON 不一致")
         return record
@@ -55,29 +56,52 @@ class ActivityPersistence:
             raise ActivityAlreadyExistsError("活动实例 ID 已存在，不能覆盖初始化")
         await self.session.insert("activity_instances", {
             "activity_id": initial.activity_id, "agent_id": initial.agent_id, "revision": initial.revision,
+            "status": initial.status.value,
             "definition_json": record.definition.model_dump_json(), "instance_json": initial.model_dump_json(),
         })
         return record
 
-    async def list_active_activities(self, agent_id: str) -> tuple[ActivityRecord, ...]:
-        """分页读取，不能只检查前 100 条历史记录。状态仍由模型 JSON 校验。"""
-        records = []
-        after_id = None
+    async def get_committed_events(self, record: ActivityRecord) -> tuple[AgentEvent, ...]:
+        if record.instance.revision == 0:
+            return ()
+        row = await self.session.fetch_one("activity_commits", where={
+            "activity_id": record.instance.activity_id, "from_revision": record.instance.revision - 1,
+        })
+        if row is None:
+            return ()
+        result = ActivityExecutionResult.model_validate_json(text_column(row, "result_json"))
+        if result.instance != record.instance:
+            raise StorageError("活动提交与当前快照不一致")
+        return result.events
+
+    async def reconcile_status_index(self):
+        """旧 JSON 的状态仅回填索引列；不改实例、修订或状态结算。"""
         while True:
-            rows = await self.session.fetch_all(
-                "activity_instances", where={"agent_id": agent_id},
-                after=None if after_id is None else {"activity_id": after_id},
-                order_by=("activity_id",),
-            )
+            rows = await self.session.fetch_all("activity_instances", where={"status": "unknown"}, order_by=("activity_id",))
             if not rows:
-                return tuple(records)
+                return
             for row in rows:
-                record = await self.get_activity(agent_id, text_column(row, "activity_id"))
-                if record is not None and record.instance.status in {
-                    ActivityStatus.PENDING, ActivityStatus.RUNNING, ActivityStatus.PAUSED,
-                }:
-                    records.append(record)
-            after_id = text_column(rows[-1], "activity_id")
+                record = await self.get_activity(row["agent_id"], row["activity_id"])
+                changed = await self.session.update("activity_instances", {"status": record.instance.status.value},
+                    where={"activity_id": row["activity_id"], "status": "unknown"})
+                if changed != 1:
+                    raise StorageError("活动状态索引回填冲突")
+
+    async def list_active_activities(self, agent_id: str) -> tuple[ActivityRecord, ...]:
+        """按状态索引查询活跃实例，不再解析历史终态活动。"""
+        records = []
+        for status in (ActivityStatus.PENDING, ActivityStatus.RUNNING, ActivityStatus.PAUSED):
+            after_id = None
+            while True:
+                rows = await self.session.fetch_all("activity_instances", where={"agent_id": agent_id, "status": status.value},
+                    after=None if after_id is None else {"activity_id": after_id}, order_by=("activity_id",))
+                if not rows: break
+                for row in rows:
+                    record = await self.get_activity(agent_id, row["activity_id"])
+                    if record is not None:
+                        records.append(record)
+                after_id = rows[-1]["activity_id"]
+        return tuple(sorted(records, key=lambda record: record.instance.activity_id))
 
     async def commit_activity_result(
         self, operation: str, context: ActivityContext, result: ActivityExecutionResult, *,
@@ -150,7 +174,7 @@ class ActivityPersistence:
                 await self.core.create_schedule(next_schedule)
             return current
         changed = await self.session.update("activity_instances", {
-            "revision": candidate.revision, "instance_json": candidate.model_dump_json(),
+            "revision": candidate.revision, "instance_json": candidate.model_dump_json(), "status": candidate.status.value,
         }, where={"activity_id": previous.activity_id, "agent_id": previous.agent_id, "revision": previous.revision})
         if changed != 1:
             raise ActivityVersionConflictError("数据库中的活动修订已经变化")

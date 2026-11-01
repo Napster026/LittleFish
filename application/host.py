@@ -29,6 +29,7 @@ from .settings import HostSettings
 from ..cognition.evaluation import RuleEvaluation
 from ..activity.feedback import ActivityFeedback
 from ..cognition.prompt_builder import build_prompt_context
+from .memory import format_memory_result
 
 
 class PersonaHost:
@@ -37,7 +38,7 @@ class PersonaHost:
         self.settings = HostSettings.model_validate(settings.model_dump())
         self.data_dir = Path(data_dir)
         self.clock = clock if clock is not None else lambda: datetime.now(timezone.utc)
-        self.store = PersonaStore(SQLiteStorage(self.data_dir / "persona.sqlite3"), evaluation=self.settings.evaluation)
+        self.store = PersonaStore(SQLiteStorage(self.data_dir / "persona.sqlite3"), evaluation=self.settings.evaluation, memory=self.settings.memory)
         self.selector = self.settings.simulation.selector()
         self.policy = self.settings.arbitration()
         self._persist_controls = persist_controls
@@ -164,23 +165,27 @@ class PersonaHost:
             await self._consider_appraisal(receipt)
             return receipt
 
+    async def _canonical_message(self, event, now):
+        platform_timestamp = None
+        existing = await self.store.get_event(event.event_id)
+        if existing is not None:
+            # 重投先复用首条规范事件；不重新钳制或改写时间审计记录。
+            if existing.model_dump(exclude={"timestamp"}) != event.model_dump(exclude={"timestamp"}):
+                raise EventConflictError("同一 QQ 消息 ID 的内容或作用域发生变化")
+            event = existing
+        elif event.timestamp > now:
+            # 接收时间用于结算；平台原始时间另存关联审计，与原消息原子提交。
+            platform_timestamp = event.timestamp
+            event = AgentEvent(**{**event.model_dump(), "timestamp": now})
+        return event, platform_timestamp
+
     async def ingest(self, event: AgentEvent, *, directed_to_agent=False):
         async with self._operations:
             self._check()
             if event.event_type != "SOCIAL.message_received":
                 raise ValueError("消息入口只接收 SOCIAL.message_received")
             now = normalize_schedule_time(self.clock())
-            platform_timestamp = None
-            existing = await self.store.get_event(event.event_id)
-            if existing is not None:
-                # 重投先复用首条规范事件；不重新钳制或改写时间审计记录。
-                if existing.model_dump(exclude={"timestamp"}) != event.model_dump(exclude={"timestamp"}):
-                    raise EventConflictError("同一 QQ 消息 ID 的内容或作用域发生变化")
-                event = existing
-            elif event.timestamp > now:
-                # 接收时间用于结算；平台原始时间另存关联审计，与原消息原子提交。
-                platform_timestamp = event.timestamp
-                event = AgentEvent(**{**event.model_dump(), "timestamp": now})
+            event, platform_timestamp = await self._canonical_message(event,now)
             receipt = await self.store.record_rule_message(self.settings.agent_id, event, now=now,
                 directed=directed_to_agent, platform_timestamp=platform_timestamp)
             result = await self.runtime.submit(event)
@@ -198,7 +203,7 @@ class PersonaHost:
                 await self._consider_appraisal(receipt)
             return event
 
-    async def chat_context(self, scope_id):
+    async def chat_context(self, scope_id, *, query="", speaker_id=None, is_private=True):
         async with self._operations:
             self._check()
             cfg = self.settings.chat_context
@@ -207,8 +212,29 @@ class PersonaHost:
             snapshot = await self.store.chat_snapshot(self.settings.agent_id, scope_id, now=self.clock(),
                 rates=self.settings.simulation.need_rates,
                 labels={item.definition_id: item.name for item in self.settings.simulation.activities},
-                include_feedback=cfg.include_feedback)
-            return build_prompt_context(snapshot, cfg)
+                include_feedback=cfg.include_feedback,query=query,speaker_id=speaker_id,
+                include_memories=self.settings.memory.enabled and (not self.settings.memory.private_only or is_private))
+            return build_prompt_context(snapshot, cfg, max_memory_chars=self.settings.memory.max_context_chars)
+
+    async def memory_command(self, event, action, value=""):
+        async with self._operations:
+            self._check()
+            cfg=self.settings.memory
+            if not cfg.enabled:
+                return "记忆功能已关闭"
+            if cfg.private_only and event.payload.get("group_id"):
+                return "当前记忆功能仅在绑定私聊中使用"
+            if action not in ("add","list","pending","show","history","delete","search"):
+                return "用法：/persona_memory add 内容 | list [上一页最后ID] | pending [上页最后ID] | show ID | history ID | delete ID | search 问题"
+            if action in ("add","delete","show","history","search") and not value.strip():
+                return "此操作需要正文、问题或记忆 ID"
+            now=normalize_schedule_time(self.clock())
+            event,platform_timestamp=await self._canonical_message(event,now)
+            result=await self.store.memory_operation(self.settings.agent_id,event,action,value.strip(),cfg,
+                platform_timestamp=platform_timestamp,now=now)
+            if action=="delete":
+                self._last_contexts.pop(event.scope_id,None)
+            return format_memory_result(action,result,cfg)
 
     def remember_context(self, context):
         self._last_contexts[context.scope_id] = context
@@ -279,6 +305,8 @@ class PersonaHost:
             lines.append("本次加载最近入站：" + (self.last_message_id or "尚未收到绑定范围内的 QQ 消息"))
             lines.append("规则评价：" + ("开启" if self.settings.evaluation.enabled else "关闭"))
             lines.append("附带语义评价：" + ("开启" if self.settings.evaluation.semantic.enabled else "关闭"))
+            if self.store.memory_index_report.skipped:
+                lines.append(f"记忆索引：本次加载跳过 {self.store.memory_index_report.skipped} 条异常记录；用 /persona_memory pending 查看当前会话")
             return "\n".join(lines)
 
     async def evaluation_status(self, source_event_id=""):

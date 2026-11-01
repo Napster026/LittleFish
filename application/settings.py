@@ -12,6 +12,8 @@ from ..core.state import AgentState
 from ..persona.emotion import EmotionDynamics, EmotionState, VAD
 from ..persona.needs import NeedRates, NeedState
 from ..cognition.evaluation import EvaluationSettings
+from ..cognition.prompt_builder import ChatContextSettings
+from ..memory.models import MemorySettings
 
 
 class InitialEmotion(BaseModel):
@@ -86,6 +88,8 @@ class HostSettings(BaseModel):
     qq_platform_ids: tuple[StrictStr, ...] = ()
     simulation: SimulationSettings = Field(default_factory=SimulationSettings)
     evaluation: EvaluationSettings = Field(default_factory=EvaluationSettings)
+    chat_context: ChatContextSettings = Field(default_factory=ChatContextSettings)
+    memory: MemorySettings = Field(default_factory=MemorySettings)
 
     @field_validator("agent_id")
     @classmethod

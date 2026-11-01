@@ -3,10 +3,10 @@
 from datetime import datetime
 from typing import Protocol
 
-from activity.executor import ActivityContext, ActivityExecutionResult
-from activity.models import ActivityRecord
-from core.events import AgentEvent
-from core.scheduler import ScheduledEvent, ScheduleRecord
+from .executor import ActivityContext, ActivityExecutionResult
+from .models import ActivityRecord
+from ..core.events import AgentEvent
+from ..core.scheduler import ScheduledEvent, ScheduleRecord
 
 
 class ActivityStore(Protocol):

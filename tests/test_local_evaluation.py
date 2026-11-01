@@ -110,7 +110,7 @@ class LocalEvaluationTests(unittest.IsolatedAsyncioTestCase):
         fresh = await self.store.record_rule_message(self.agent, self.source("three"), now=self.now)
         self.assertIsNotNone(fresh.payload["evaluation"]["impulse"])
         with closing(sqlite3.connect(self.path)) as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 3)
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 6)
 
     async def test_plain_directed_message_relieves_social_need_without_emotion(self):
         before = await self.state()

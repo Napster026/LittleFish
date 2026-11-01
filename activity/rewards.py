@@ -7,11 +7,11 @@ from uuid import NAMESPACE_URL, uuid5
 
 from pydantic import ValidationError
 
-from activity.models import ActivityRecord, ActivityStatus, ExecutionMode
-from core.events import AgentEvent, EventProvenance
-from core.settlement import StateChangeProposal
-from core.state import AgentState
-from persona.needs import NeedDelta
+from .models import ActivityRecord, ActivityStatus, ExecutionMode
+from ..core.events import AgentEvent, EventProvenance
+from ..core.settlement import StateChangeProposal
+from ..core.state import AgentState
+from ..persona.needs import NeedDelta
 
 
 class ActivityRewardError(ValueError):

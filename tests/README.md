@@ -1,6 +1,73 @@
 # 手动验证
 
-测试由开发者在项目根目录运行。自主活动选择、最小行为仲裁与情绪引擎已由开发者测试通过；情绪偏好评分也已通过；用户已验证 QQ 私聊基础链路；v0.2.1 全量测试已由用户确认通过；v0.3.0 全量测试已由用户确认通过；本次 v0.3.1 修订尚待回归确认。以功能行为和真实缺陷作为验收依据，不以测试数量衡量进度。
+测试由开发者在项目根目录运行。自主活动选择、最小行为仲裁与情绪引擎已由开发者测试通过；情绪偏好评分也已通过；用户已验证 QQ 私聊基础链路；v0.2.1 全量测试已由用户确认通过；v0.3.0 全量测试已由用户确认通过；本轮 v0.5.3 修订尚待用户验证。以功能行为和真实缺陷作为验收依据，不以测试数量衡量进度。
+
+本轮 v0.5.3 仅做静态检查，测试由用户执行：
+
+```powershell
+python -m unittest discover -s tests -p "test_memory.py" -v
+python -m unittest discover -s tests -p "test_persistence_layers.py" -v
+python -m unittest discover -s tests -p "test_astrbot_host.py" -v
+python -m unittest discover -s tests -v
+```
+
+新增验证：单条坏 JSON 不阻断正常行或 host.ready，修复失败/修订冲突按单行回滚，501 条全坏批次仍推进游标，待修复行不参与消息归并与上下文，状态/按 scope 的 pending 和坏行删除可用，日志不含正文，全局连接/保存点错误不被降级误吞。SQLite 与内存适配器保持局部回滚契约。详见 [CHANGES_v0.5.3.md](../CHANGES_v0.5.3.md)。没有执行测试或生成 ZIP，数据库仍为 v6。
+
+以下为历史版本验证说明。
+
+本轮 v0.5.2 仅做静态检查，测试由用户执行：
+
+```powershell
+python -m unittest discover -s tests -p "test_memory.py" -v
+python -m unittest discover -s tests -v
+```
+
+新增验证：排序后展示选择、粗细组最高排名、非相邻重复不占限额、不同具体安排及主体/来源/状态边界、未知元数据和非计划不去重；真实临时库中保留两条，召回一条且正文/修订/来源/角色不变。见 [CHANGES_v0.5.2.md](../CHANGES_v0.5.2.md)。没有执行测试或生成 ZIP，数据库仍为 v6。
+
+以下为历史版本验证说明。
+
+本轮 v0.5.1 仅做静态检查，测试由用户执行：
+
+```powershell
+python -m unittest discover -s tests -p "test_memory.py" -v
+python -m unittest discover -s tests -p "test_persistence_layers.py" -v
+python -m unittest discover -s tests -v
+```
+
+新增验证：长文填充不会天然加分，importance 进入主排序，30 天半衰及重新确认，词形/否定保留，有界候选批量评分，终态拒绝普通反向更新；v5→v6 迁移和旧索引重建不改原 JSON/修订/来源/角色，失败回滚及重试，独立时间列的包含边界条件。说明见 [CHANGES_v0.5.1.md](../CHANGES_v0.5.1.md)。没有执行单元测试、真实库升级或生成 ZIP。
+
+以下为历史版本反馈和验证说明。
+
+用户全量回归报告 351 项、1 项旧夹具错误；已修正 `test_activity_rewards.py` 在直接构造 completed 快照时漏写 status 索引的问题，并独立保留索引损坏的拒绝用例。业务代码未改，v0.5.0 与打包清单不变。实现者未运行测试，请先复测：
+
+```powershell
+python -m unittest discover -s tests -p "test_activity_rewards.py" -v
+python -m unittest discover -s tests -v
+```
+
+本轮 v0.5.0 仅做静态检查，测试由用户执行：
+
+```powershell
+python -m unittest discover -s tests -p "test_memory.py" -v
+python -m unittest discover -s tests -p "test_astrbot_host.py" -v
+python -m unittest discover -s tests -v
+```
+
+重点：用户给出的“明天出门→明天逛街看电影”、近期候选、不同安排/人物/日期隔离、跨午夜、明确改期/取消、偏好维度、来源修订、删除后重投不复活、事务回滚、局部索引查询和独立/总字符预算。QQ 替身覆盖管理员与绑定门禁、含空格正文、实际请求召回及删除预览清空。schema v5 迁移覆盖旧状态保留、失败回滚及重试，旧迁移夹具同步更新。详见 [CHANGES_v0.5.0.md](../CHANGES_v0.5.0.md)。没有执行测试或生成 ZIP。
+
+以下为历史版本验证说明。
+
+本轮 v0.4.0 仅做静态检查，测试由用户执行：
+
+```powershell
+python -m unittest discover -s tests -p "test_chat_context.py" -v
+python -m unittest discover -s tests -p "test_astrbot_host.py" -v
+python -m unittest discover -s tests -v
+```
+
+重点验证：上下文总字符预算、只读状态投影、会话反馈隔离与原子回滚、重载连续、当前查询不扫历史事件/终态活动；保留原人设/提问/历史/工具，重复装配、绑定/命令/管理员门禁、群聊显式开启、配置开关与异常回退。迁移测试覆盖 v1/v2/v3 到 v4、活动索引回填不改业务 JSON、失败回滚和重试。`schema_fixtures.py` 只用于临时测试库重建旧结构，不能用于生产降级。
+
+QQ 真实验证和安装迁移说明见 [CHANGES_v0.4.0.md](../CHANGES_v0.4.0.md)。替身用例不能替代真实 AstrBot/QQ 联调；本轮未生成安装包。以下保留历史版本验证说明。
 
 本次 v0.3.2 先运行：
 

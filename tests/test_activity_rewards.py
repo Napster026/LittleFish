@@ -28,7 +28,7 @@ from persona_agent.core.state import AgentState
 from persona_agent.infrastructure.storage import SQLiteStorage
 from persona_agent.application.persistence import PersonaStore
 from persona_agent.persistence.errors import (
-    ProposalConflictError,
+    ProposalConflictError, StorageError,
 )
 from persona_agent.persona.needs import NeedState
 
@@ -299,14 +299,33 @@ class ActivityRewardTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first.version, 1)
 
     async def test_completed_label_without_commit_evidence_is_rejected(self):
-        running, _, result = await self.ready_to_complete()
+        _, _, result = await self.ready_to_complete()
+        # 只制造“缺少完成提交证据”；状态索引必须与完成快照一致。
         with closing(sqlite3.connect(self.path)) as connection:
             connection.execute(
-                "UPDATE activity_instances SET revision = ?, instance_json = ? WHERE activity_id = ?",
-                (result.instance.revision, result.instance.model_dump_json(), self.initial.activity_id),
+                "UPDATE activity_instances SET revision = ?, status = ?, instance_json = ? WHERE activity_id = ?",
+                (result.instance.revision, result.instance.status.value,
+                 result.instance.model_dump_json(), self.initial.activity_id),
             )
             connection.commit()
+        saved = await self.storage.get_activity(self.state.agent_id, self.initial.activity_id)
+        self.assertEqual(saved.instance, result.instance)
         with self.assertRaises(InvalidCompletionEventError):
+            await self.storage.settle_activity_completion(
+                self.state.agent_id, self.initial.activity_id, settled_at=self.time + timedelta(seconds=20),
+            )
+        self.assertEqual(await self.storage.get_state(self.state.agent_id), self.state)
+
+    async def test_status_index_mismatch_prevents_completion_settlement(self):
+        await self.ready_to_complete()
+        # 只改索引，保留 running JSON；独立验证损坏数据在读取时被拒绝。
+        with closing(sqlite3.connect(self.path)) as connection:
+            connection.execute(
+                "UPDATE activity_instances SET status = ? WHERE activity_id = ?",
+                (ActivityStatus.COMPLETED.value, self.initial.activity_id),
+            )
+            connection.commit()
+        with self.assertRaises(StorageError):
             await self.storage.settle_activity_completion(
                 self.state.agent_id, self.initial.activity_id, settled_at=self.time + timedelta(seconds=20),
             )

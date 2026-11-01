@@ -40,19 +40,38 @@ class MemorySession:
         if not self.active:
             raise StorageNotOpenError("会话已结束")
 
+    @asynccontextmanager
+    async def savepoint(self):
+        self.check()
+        before=copy.deepcopy(self.rows)
+        try:
+            yield
+        except BaseException:
+            self.rows.clear()
+            self.rows.update(before)
+            raise
+
     async def fetch_one(self, table, *, where):
         rows = await self.fetch_all(table, where=where, limit=1)
         return rows[0] if rows else None
 
-    async def fetch_all(self, table, *, where=None, at_most=None, after=None, order_by=(), limit=100):
+    async def fetch_all(self, table, *, where=None, at_most=None, after=None, order_by=(), limit=100,
+                        before=None, at_least=None, descending=False, where_in=None):
         self.check()
+        if any(not isinstance(values,tuple) or any(value is None for value in values) for values in (where_in or {}).values()):
+            raise ValueError("批量条件必须为不含 NULL 的元组")
+        if sum(len(values) for values in (where_in or {}).values())>512:
+            raise ValueError("批量条件最多允许 512 个值")
         rows = [row for row in self.rows.get(table, []) if (
             all(row.get(k) == v for k, v in (where or {}).items())
-            and all(row[k] <= v for k, v in (at_most or {}).items())
-            and all(row[k] > v for k, v in (after or {}).items())
+            and all(row.get(k) in values for k,values in (where_in or {}).items())
+            and all(row.get(k) is not None and row[k] <= v for k, v in (at_most or {}).items())
+            and all(row.get(k) is not None and row[k] > v for k, v in (after or {}).items())
+            and all(row.get(k) is not None and row[k] < v for k, v in (before or {}).items())
+            and all(row.get(k) is not None and row[k] >= v for k, v in (at_least or {}).items())
         )]
         if order_by:
-            rows.sort(key=lambda row: tuple(row[key] for key in order_by))
+            rows.sort(key=lambda row: tuple(row[key] for key in order_by), reverse=descending)
         return tuple(copy.deepcopy(rows[:limit]))
 
     async def insert(self, table, values):
@@ -69,6 +88,16 @@ class MemorySession:
                 row.update(copy.deepcopy(values))
                 count += 1
         return count
+
+
+    async def delete(self, table, *, where):
+        self.check()
+        if not where:
+            raise ValueError("删除必须提供条件")
+        rows=self.rows.get(table,[])
+        keep=[row for row in rows if not all(row.get(k)==v for k,v in where.items())]
+        self.rows[table]=keep
+        return len(rows)-len(keep)
 
 
 class MemoryUnitOfWork:
@@ -151,6 +180,44 @@ class PersistenceLayersTests(unittest.IsolatedAsyncioTestCase):
                         if isinstance(node, ast.Import):
                             imported.update(alias.name.split(".")[0] for alias in node.names)
                     self.assertFalse(imported & forbidden)
+
+    async def test_savepoint_rolls_back_only_failed_work_and_keeps_outer_transaction(self):
+        async with self.backend.transaction() as session:
+            await session.insert("agent_events",{"event_id":"before","event_json":"{}"})
+            with self.assertRaises(ValueError):
+                async with session.savepoint():
+                    await session.insert("agent_events",{"event_id":"bad","event_json":"{}"})
+                    raise ValueError("row error")
+            self.assertIsNone(await session.fetch_one("agent_events",where={"event_id":"bad"}))
+            with self.assertRaises(RuntimeError):
+                async with session.savepoint():
+                    await session.insert("agent_events",{"event_id":"nested-a","event_json":"{}"})
+                    async with session.savepoint():
+                        await session.insert("agent_events",{"event_id":"nested-b","event_json":"{}"})
+                    raise RuntimeError("outer savepoint failed")
+            with self.assertRaises(asyncio.CancelledError):
+                async with session.savepoint():
+                    await session.insert("agent_events",{"event_id":"cancelled","event_json":"{}"})
+                    raise asyncio.CancelledError()
+            await session.insert("agent_events",{"event_id":"after","event_json":"{}"})
+        async with self.backend.transaction() as verify:
+            rows=await verify.fetch_all("agent_events",order_by=("event_id",))
+            self.assertEqual(tuple(row["event_id"] for row in rows),("after","before"))
+        with self.assertRaises(StorageNotOpenError):
+            async with session.savepoint():
+                pass
+
+    async def test_bounded_in_query_respects_scope_empty_and_whitelist(self):
+        async with self.backend.transaction() as session:
+            for identifier in ("one","two","three"):
+                await session.insert("agent_events",{"event_id":identifier,"event_json":"{}"})
+            rows=await session.fetch_all("agent_events",where_in={"event_id":("one","three")},order_by=("event_id",))
+            self.assertEqual(tuple(row["event_id"] for row in rows),("one","three"))
+            self.assertEqual(await session.fetch_all("agent_events",where_in={"event_id":()}),())
+            self.assertEqual(await session.fetch_all("agent_events",where={"event_id":"two"},where_in={"event_id":("one",)}),())
+            with self.assertRaises(ValueError):await session.fetch_all("agent_events",where_in={"unknown":("one",)})
+            with self.assertRaises(ValueError):await session.fetch_all("agent_events",where_in={"event_id":(None,)})
+            with self.assertRaises(ValueError):await session.fetch_all("agent_events",where_in={"event_id":("x",)*513})
 
     async def test_sqlite_adapter_loads_when_business_imports_are_blocked(self):
         code = """

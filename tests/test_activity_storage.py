@@ -1,5 +1,7 @@
 """活动业务提交、原子反馈与结构迁移测试，由开发者手动运行。"""
 
+from schema_fixtures import restore_v3_layout
+
 import asyncio
 import sqlite3
 import unittest
@@ -249,6 +251,7 @@ class ActivityStorageTests(unittest.IsolatedAsyncioTestCase):
         await self.storage.close()
         # 移除后续版本增加的表，保留已有数据，模拟真正的 v1 结构。
         with closing(sqlite3.connect(self.path)) as connection:
+            restore_v3_layout(connection)
             connection.execute("DROP TABLE scheduled_events")
             connection.execute("DROP TABLE activity_commits")
             connection.execute("DROP TABLE activity_instances")
@@ -260,11 +263,12 @@ class ActivityStorageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.storage.get_committed_proposal(self.state.agent_id, event.event_id), proposal)
         await self.storage.create_activity(self.definition, self.initial)
         with closing(sqlite3.connect(self.path)) as connection:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 3)
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 6)
 
     async def test_failed_migration_rolls_back_schema_and_version(self):
         await self.storage.close()
         with closing(sqlite3.connect(self.path)) as connection:
+            restore_v3_layout(connection)
             connection.execute("DROP TABLE scheduled_events")
             connection.execute("DROP TABLE activity_commits")
             connection.execute("DROP TABLE activity_instances")

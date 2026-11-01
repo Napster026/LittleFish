@@ -113,6 +113,50 @@ class AutonomyTests(unittest.IsolatedAsyncioTestCase):
         await self.store.close()
         self.directory.cleanup()
 
+    async def test_startup_key_is_idempotent_across_service_and_storage_restart(self):
+        state = await self.store.get_state(self.agent)
+        key = f"startup:{state.version}"
+        first = await self.service.recover()
+        self.assertEqual(first.instance.activity_id, selection_id(self.agent, key))
+        receipt = await self.store.get_event(first.instance.activity_id)
+        self.assertEqual(receipt.payload["decision_key"], key)
+        self.now += timedelta(seconds=1)
+        await self.store.close()
+        await self.store.open()
+        self.assertEqual(await self.make_service().recover(), first)
+        self.assertEqual(await self.store.get_event(first.instance.activity_id), receipt)
+        self.assertEqual(await self.store.get_state(self.agent), state)
+
+    async def test_startup_retry_reuses_pending_receipt_and_new_version_gets_new_key(self):
+        with patch.object(self.activities, "start_activity", AsyncMock(side_effect=RuntimeError("start failed"))):
+            with self.assertRaises(RuntimeError):
+                await self.service.recover()
+        identifier = selection_id(self.agent, "startup:0")
+        pending = await self.store.get_activity(self.agent, identifier)
+        self.assertEqual(pending.instance.status, ActivityStatus.PENDING)
+        recovered = await self.make_service().recover()
+        self.assertEqual(recovered.instance.activity_id, identifier)
+        self.assertEqual(recovered.instance.status, ActivityStatus.RUNNING)
+        self.now += timedelta(seconds=10)
+        await self.activities.pause_activity(identifier)
+        state = await self.store.get_state(self.agent)
+        self.assertGreater(state.version, 0)
+        await self.make_service().recover()
+        receipt = await self.store.get_event(selection_id(self.agent, f"startup:{state.version}"))
+        self.assertEqual(receipt.payload["state_version"], state.version)
+
+    async def test_startup_idle_receipt_is_reused(self):
+        idle = AutonomousActivityService(self.agent, self.store, self.selector, self.activities,
+            self.runtime, clock=lambda: self.now,
+            arbiter=BehaviorArbiter(ArbitrationPolicy(autonomous_enabled=False)))
+        self.assertIsNone(await idle.recover())
+        identifier = selection_id(self.agent, "startup:0")
+        receipt = await self.store.get_event(identifier)
+        self.now += timedelta(seconds=1)
+        self.assertIsNone(await idle.recover())
+        self.assertEqual(await self.store.get_event(identifier), receipt)
+        self.assertEqual(await self.store.list_active_activities(self.agent), ())
+
     async def test_need_tick_start_completion_and_replay(self):
         plan = await self.store.start_needs_clock(
             self.agent, rates=NeedRates(energy=-4, satiety=0, boredom=0, social_need=0), now=self.now,

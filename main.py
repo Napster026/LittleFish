@@ -1,6 +1,7 @@
 """AstrBot v4.29.3 插件入口；QQ 入站和管理员调试命令。"""
 
 import weakref
+import re
 
 from astrbot.api import AstrBotConfig
 from astrbot.api.event import AstrMessageEvent, filter
@@ -50,6 +51,10 @@ class PersonaPlugin(Star):
         except BaseException:
             self.host = None
             raise
+        report=self.host.store.memory_index_report
+        if report.skipped:
+            samples=", ".join(repr(identifier) for identifier in report.sample_ids)
+            self.logger.warning(f"Persona 记忆索引降级：跳过 {report.skipped} 条异常记录，插件继续运行；ID 样例：{samples}。可用 /persona_memory pending 查看当前会话。")
         self.logger.info("Persona Agent 已就绪，使用 /persona_scope 和 /persona_status 开始 QQ 联调")
 
     async def terminate(self):
@@ -94,7 +99,8 @@ class PersonaPlugin(Star):
             apply_prompt_context(req, None)
             if not self._chat_context_allowed(event) or event.get_extra("handlers_parsed_params", {}):
                 return
-            context = await self.host.chat_context(event.unified_msg_origin)
+            context = await self.host.chat_context(event.unified_msg_origin,query=event.get_message_str(),
+                speaker_id=f"{event.get_platform_id()}:user:{event.get_sender_id()}",is_private=not bool(event.get_group_id()))
             if context is not None:
                 apply_prompt_context(req, context)
                 self.host.remember_context(context)
@@ -126,8 +132,13 @@ class PersonaPlugin(Star):
                 if argument == "last":
                     context = self.host.last_context(event.unified_msg_origin)
                     return "暂无本次加载实际注入的上下文" if context is None else context.preview()
-                context = await self.host.chat_context(event.unified_msg_origin)
+                context = await self.host.chat_context(event.unified_msg_origin,
+                    speaker_id=f"{event.get_platform_id()}:user:{event.get_sender_id()}",is_private=not bool(event.get_group_id()))
                 return "当前上下文预览（不调用模型）：\n"+context.preview()
+            if operation == "memory":
+                if not self._capture_allowed(event):
+                    return "本会话未绑定，不能操作记忆"
+                return await self.host.memory_command(adapt_qq_message(event),argument,activity_id)
             if operation in ("pause", "resume"):
                 await self.host.set_controls(enabled=operation == "resume")
                 return ("自主启动已暂停，现有活动继续运行。需要暂停活动时使用 /persona_activity pause。"
@@ -146,6 +157,7 @@ class PersonaPlugin(Star):
                 "/persona_activity pause|resume|stop [活动实例ID]",
                 "/persona_feedback [活动实例ID]：查看阶段内容",
                 "/persona_context [now|last]：预览当前或最近实际注入的上下文",
+                "/persona_memory add|list|pending|show|history|delete|search：管理当前会话记忆",
             ))
         except (ValueError, RuntimeError) as exc:
             self.logger.exception("Persona 管理操作失败")
@@ -224,4 +236,14 @@ class PersonaPlugin(Star):
     @filter.command("persona_context")
     async def persona_context(self, event: AstrMessageEvent, mode: str = ""):
         if (text := await self._command(event, "context", mode)) is not None:
+            yield event.plain_result(text)
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("persona_memory")
+    async def persona_memory(self, event: AstrMessageEvent):
+        # 官方命令匹配后从原文读取剩余内容，保留包含空格的整段正文。
+        match=re.search(r"(?:^|[\s/])persona_memory(?:\s+(\S+))?(?:\s+(.*))?$",event.get_message_str().strip(),re.S)
+        action="list" if match is None or match.group(1) is None else match.group(1)
+        value="" if match is None or match.group(2) is None else match.group(2).strip()
+        if (text := await self._command(event,"memory",action,value)) is not None:
             yield event.plain_result(text)

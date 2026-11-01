@@ -3,8 +3,8 @@
 import json
 from typing import Any
 
-from persistence.errors import StorageError
-from persistence.ports import Row
+from .errors import StorageError
+from .ports import Row
 
 
 def canonical_json(data: dict[str, Any]) -> str:

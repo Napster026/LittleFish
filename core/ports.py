@@ -3,9 +3,9 @@
 from datetime import datetime
 from typing import Protocol
 
-from core.events import AgentEvent
-from core.settlement import StateChangeProposal
-from core.state import AgentState
+from .events import AgentEvent
+from .settlement import StateChangeProposal
+from .state import AgentState
 
 
 class AgentStore(Protocol):

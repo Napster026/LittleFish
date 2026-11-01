@@ -3,6 +3,8 @@
 import importlib.util
 import json
 import logging
+import sqlite3
+from contextlib import closing
 import subprocess
 import sys
 import types
@@ -10,7 +12,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from unittest.mock import patch, AsyncMock
 
 from pydantic import ValidationError
 
@@ -34,6 +36,7 @@ class QQEvent:
         self.sender_id, self.bot_id = "sender-1", "bot-1"
         self.unified_msg_origin = f"{self.platform_id}:{'GroupMessage' if group else 'FriendMessage'}:{group or self.sender_id}"
         self.message_obj = types.SimpleNamespace(message_id=message_id, timestamp=int(TIME.timestamp()))
+        self.extras = {}
 
     def get_platform_name(self): return self.platform
     def get_platform_id(self): return self.platform_id
@@ -41,7 +44,8 @@ class QQEvent:
     def get_sender_id(self): return self.sender_id
     def get_self_id(self): return self.bot_id
     def get_message_str(self): return self.text
-    def get_extra(self, key, default=None): return default
+    def get_extra(self, key, default=None): return self.extras.get(key, default)
+    def set_extra(self, key, value): self.extras[key] = value
     def is_admin(self): return self.admin
     def plain_result(self, value): return value
 
@@ -129,6 +133,35 @@ class HostTests(unittest.IsolatedAsyncioTestCase):
         self.assertLess(restored.needs.energy, before.needs.energy)
         self.assertIn("角色：", await self.host.status())
         self.assertIn("行为：", await self.host.decision())
+
+    async def test_bad_pending_memory_does_not_block_host_and_is_visible_to_admin(self):
+        await self.host.start()
+        await self.host.scheduler.stop()
+        incoming=QQEvent(group="",text="/persona_memory add 我逛了街",message_id="bad-index")
+        event=adapt_qq_message(incoming)
+        await self.host.memory_command(event,"add","我逛了街")
+        before=await self.host.store.get_state(self.settings.agent_id)
+        listing=await self.host.memory_command(adapt_qq_message(QQEvent(group="")),"list")
+        identifier=listing.split("（",1)[0]
+        await self.host.stop()
+        with closing(sqlite3.connect(Path(self.directory.name)/"persona.sqlite3")) as db:
+            db.execute("UPDATE memories SET record_json=?,index_version=0 WHERE memory_id=?",("{broken-private-json",identifier))
+            db.commit()
+        self.host=self.make_host()
+        with self.assertLogs("persona_agent.memory.persistence",level="WARNING"):
+            await self.host.start()
+        await self.host.scheduler.stop()
+        self.assertTrue(self.host.ready)
+        self.assertEqual(await self.host.store.get_state(self.settings.agent_id),before)
+        self.assertIn("本次加载跳过 1 条",await self.host.status())
+        pending=await self.host.memory_command(adapt_qq_message(QQEvent(group="")),"pending")
+        self.assertIn(identifier,pending)
+        self.assertNotIn("broken-private-json",pending)
+        context=await self.host.chat_context(event.scope_id,query="逛街")
+        self.assertEqual(context.memory_ids,())
+        deletion=adapt_qq_message(QQEvent(group="",text="/persona_memory delete "+identifier,message_id="delete-bad-index"))
+        self.assertIn("已删除",await self.host.memory_command(deletion,"delete",identifier))
+        self.assertIn("没有待修复",await self.host.memory_command(adapt_qq_message(QQEvent(group="")),"pending"))
 
     async def test_future_platform_timestamp_is_audited_and_replay_survives_clock_catchup(self):
         await self.host.start()
@@ -293,10 +326,12 @@ class PluginBoundaryTests(unittest.IsolatedAsyncioTestCase):
         events.AstrMessageEvent = QQEvent
         class CustomFilter:
             def __init__(self, *args, **kwargs): pass
-        events.filter = types.SimpleNamespace(command=decorator, permission_type=decorator,
+        events.filter = types.SimpleNamespace(command=decorator, permission_type=decorator, on_llm_request=decorator,
                                               custom_filter=decorator, CustomFilter=CustomFilter,
                                               event_message_type=decorator, EventMessageType=types.SimpleNamespace(ALL=1),
                                               PermissionType=types.SimpleNamespace(ADMIN=1))
+        providers = types.ModuleType("astrbot.api.provider")
+        providers.ProviderRequest = types.SimpleNamespace
         stars = types.ModuleType("astrbot.api.star")
         stars.Star, stars.Context, stars.StarTools = Star, object, object
         package = types.ModuleType("plugin_contract_test")
@@ -304,7 +339,7 @@ class PluginBoundaryTests(unittest.IsolatedAsyncioTestCase):
         spec = importlib.util.spec_from_file_location("plugin_contract_test.main", ROOT / "main.py")
         module = importlib.util.module_from_spec(spec)
         replacements = {"astrbot": types.ModuleType("astrbot"), "astrbot.api": api,
-                        "astrbot.api.event": events, "astrbot.api.star": stars,
+                        "astrbot.api.event": events, "astrbot.api.star": stars, "astrbot.api.provider": providers,
                         "plugin_contract_test": package, spec.name: module}
         with patch.dict(sys.modules, replacements):
             spec.loader.exec_module(module)
@@ -325,3 +360,78 @@ class PluginBoundaryTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(OSError): plugin._save_controls(ArbitrationPolicy(autonomous_enabled=False))
             self.assertTrue(config["autonomous_enabled"])
             self.assertEqual(config["disabled_activities"], [])
+            with TemporaryDirectory() as directory:
+                settings = HostSettings(qq_private_ids=["sender-1"], qq_group_ids=["group-1"])
+                plugin.host = module.PersonaHost(settings, Path(directory), clock=lambda: TIME)
+                await plugin.host.start()
+                try:
+                    event = QQEvent(group="")
+                    other_part = {"type": "text", "text": "其他插件的内容"}
+                    original_contexts = [{"role": "user", "content": "原历史"}]
+                    req = types.SimpleNamespace(system_prompt="AstrBot 原人设", extra_user_content_parts=[other_part],
+                                                prompt="原提问", contexts=original_contexts, func_tool=object())
+                    before = await plugin.host.store.get_state(settings.agent_id)
+                    await plugin.attach_chat_context(event, req)
+                    self.assertTrue(req.system_prompt.startswith("AstrBot 原人设"))
+                    self.assertEqual(len(req.extra_user_content_parts), 2)
+                    self.assertIs(req.extra_user_content_parts[0], other_part)
+                    self.assertIs(req.contexts, original_contexts)
+                    self.assertEqual(req.prompt, "原提问")
+                    self.assertIn("persona_state=", req.extra_user_content_parts[-1]["text"])
+                    await plugin.attach_chat_context(event, req)
+                    self.assertEqual(len(req.extra_user_content_parts), 2)
+                    self.assertEqual(await plugin.host.store.get_state(settings.agent_id), before)
+                    self.assertIn("附加长度", await plugin._command(event, "context", "last"))
+                    self.assertIn("不调用模型", await plugin._command(event, "context", "now"))
+                    self.assertIsNone(await plugin._command(QQEvent(group="", admin=False), "context"))
+                    denied = QQEvent(group="")
+                    denied.sender_id = "unbound"
+                    await plugin.attach_chat_context(denied, req)
+                    self.assertEqual(req.system_prompt, "AstrBot 原人设")
+                    self.assertEqual(req.extra_user_content_parts, [other_part])
+                    await plugin.attach_chat_context(QQEvent(), req)
+                    self.assertEqual(req.extra_user_content_parts, [other_part])
+                    group_settings = settings.model_dump()
+                    group_settings["chat_context"]["private_only"] = False
+                    plugin.host.settings = module.HostSettings(**group_settings)
+                    group = QQEvent()
+                    group.is_at_or_wake_command = False
+                    await plugin.attach_chat_context(group, req)
+                    self.assertEqual(req.extra_user_content_parts, [other_part])
+                    group.is_at_or_wake_command = True
+                    await plugin.attach_chat_context(group, req)
+                    self.assertEqual(len(req.extra_user_content_parts), 2)
+                    plugin.host.settings = module.HostSettings(**settings.model_dump())
+                    event.set_extra("handlers_parsed_params", {"command": "other"})
+                    await plugin.attach_chat_context(event, req)
+                    self.assertEqual(req.extra_user_content_parts, [other_part])
+                    event.set_extra("handlers_parsed_params", {})
+                    with patch.object(plugin.host, "chat_context", AsyncMock(side_effect=RuntimeError("read failed"))):
+                        await plugin.attach_chat_context(event, req)
+                    self.assertEqual(req.system_prompt, "AstrBot 原人设")
+                    self.assertEqual(req.extra_user_content_parts, [other_part])
+                    self.assertIsNone(await plugin._command(QQEvent(group="",admin=False),"memory","list"))
+                    self.assertIn("未绑定",await plugin._command(denied,"memory","list"))
+                    self.assertIn("仅在绑定私聊",await plugin._command(QQEvent(),"memory","list"))
+                    add=QQEvent(group="",text="/persona_memory add 我明天会出门",message_id="memory-add")
+                    self.assertIn("已新增",(await anext(plugin.persona_memory(add))))
+                    more=QQEvent(group="",text="/persona_memory add 我明天去逛街 看电影",message_id="memory-enrich")
+                    self.assertIn("已补充",(await anext(plugin.persona_memory(more))))
+                    event.text="我的未来计划是什么"
+                    await plugin.attach_chat_context(event,req)
+                    actual=plugin.host.last_context(event.unified_msg_origin)
+                    self.assertEqual(len(actual.memory_ids),1)
+                    self.assertIn("逛街 看电影",actual.user_text)
+                    self.assertEqual(await plugin.host.store.get_state(settings.agent_id),before)
+                    remove=QQEvent(group="",text="/persona_memory delete "+actual.memory_ids[0],message_id="memory-delete")
+                    self.assertIn("已删除",(await anext(plugin.persona_memory(remove))))
+                    self.assertIsNone(plugin.host.last_context(event.unified_msg_origin))
+                    await plugin.attach_chat_context(event,req)
+                    self.assertEqual(plugin.host.last_context(event.unified_msg_origin).memory_ids,())
+                    changed = settings.model_dump()
+                    changed["chat_context"]["enabled"] = False
+                    plugin.host.settings = module.HostSettings(**changed)
+                    await plugin.attach_chat_context(event, req)
+                    self.assertEqual(req.extra_user_content_parts, [other_part])
+                finally:
+                    await plugin.host.stop()

@@ -15,8 +15,8 @@ from pydantic import (
     AwareDatetime, BaseModel, ConfigDict, Field, StrictStr, field_validator, model_validator,
 )
 
-from core.events import AgentEvent
-from core.state import AgentState
+from .events import AgentEvent
+from .state import AgentState
 
 
 def normalize_schedule_time(value: datetime) -> datetime:

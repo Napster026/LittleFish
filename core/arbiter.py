@@ -51,6 +51,30 @@ class ArbitrationContext(BaseModel):
         return self
 
 
+class UtilityBreakdown(BaseModel):
+    """可选的活动评分解释；内核不计算或读取具体情绪模型。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    need_score: Annotated[float, Field(allow_inf_nan=False)]
+    emotion_adjustment: Annotated[float, Field(ge=-1, le=1, allow_inf_nan=False)]
+    final_score: Annotated[float, Field(allow_inf_nan=False)]
+
+    @field_validator("need_score", "emotion_adjustment", "final_score", mode="before")
+    @classmethod
+    def numeric(cls, value):
+        if type(value) not in (int, float):
+            raise ValueError("评分分项必须是有限数值")
+        return value
+
+    @model_validator(mode="after")
+    def consistent(self):
+        if self.need_score <= 0 and self.emotion_adjustment != 0:
+            raise ValueError("没有正需求收益时不能加入情绪修正")
+        if self.final_score != self.need_score + self.emotion_adjustment:
+            raise ValueError("最终分必须等于需求分加情绪修正")
+        return self
+
+
 class BehaviorCandidate(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     candidate_id: StrictStr = Field(min_length=1)
@@ -60,6 +84,7 @@ class BehaviorCandidate(BaseModel):
     activity_id: StrictStr | None = None
     mode: StrictStr | None = None
     unavailable_reason: StrictStr | None = None
+    score_breakdown: UtilityBreakdown | None = None
 
     @field_validator("utility", mode="before")
     @classmethod
@@ -70,6 +95,8 @@ class BehaviorCandidate(BaseModel):
 
     @model_validator(mode="after")
     def validate_target(self):
+        if self.score_breakdown is not None and self.utility != self.score_breakdown.final_score:
+            raise ValueError("候选效用必须等于评分分项的最终分")
         if self.kind == BehaviorKind.IDLE:
             if any(v is not None for v in (self.definition_id, self.activity_id, self.mode)):
                 raise ValueError("空闲候选不能绑定活动")

@@ -4,17 +4,17 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from core.events import AgentEvent
-from core.scheduler import ScheduledEvent, ScheduleRecord, ScheduleStatus, normalize_schedule_time
-from core.settlement import StateChangeProposal, StateVersionConflictError, settle_state
-from core.state import AgentState
-from persistence.errors import (
+from .events import AgentEvent
+from .scheduler import ScheduledEvent, ScheduleRecord, ScheduleStatus, normalize_schedule_time
+from .settlement import StateChangeProposal, StateVersionConflictError, settle_state
+from .state import AgentState
+from ..persistence.errors import (
     EventAlreadySettledError, EventConflictError, EventNotFoundError, ProposalConflictError,
     ScheduleConflictError, ScheduleNotFoundError, ScheduleVersionConflictError,
     StateAlreadyExistsError, StateNotFoundError, StorageError,
 )
-from persistence.ports import PersistenceSession, Row
-from persistence.serialization import canonical_json, integer_column, optional_text_column, text_column
+from ..persistence.ports import PersistenceSession, Row
+from ..persistence.serialization import canonical_json, integer_column, optional_text_column, text_column
 
 
 class CorePersistence:

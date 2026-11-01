@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import inspect
 
-from activity.executor import (
+from .executor import (
     ActivityContext, ActivityExecutionError, ActivityExecutionResult,
     ExecutorCapabilities, InvalidActivityStatusError,
 )
-from activity.models import ActivityInstance, ActivityStatus, ExecutionMode
-from activity.registry import ExecutorRegistry
-from core.events import EventCategory, EventProvenance
+from .models import ActivityInstance, ActivityRecord, ActivityStatus, ExecutionMode
+from .registry import ExecutorRegistry
+from .feedback import STAGE_EVENT_TYPE, parse_feedback_event, parse_activity_feedback
+from ..core.events import EventCategory, EventProvenance
 
 
 class UnsupportedExecutorCapabilityError(ActivityExecutionError):
@@ -110,6 +111,18 @@ class ActivityManager:
             raise InvalidExecutorResultError("活动状态变化必须提供反馈事件")
 
         for event in result.events:
+            if event.event_type == STAGE_EVENT_TYPE:
+                if current.status not in {ActivityStatus.RUNNING, ActivityStatus.PAUSED}:
+                    raise InvalidExecutorResultError("阶段反馈不能把整项活动标记为终态")
+                if event.timestamp > context.now:
+                    raise InvalidExecutorResultError("阶段反馈不能来自未来")
+                parse_feedback_event(ActivityRecord(definition=context.definition, instance=current), event)
+            if event.event_type == "ACTIVITY.completed" and current.status != ActivityStatus.COMPLETED:
+                raise InvalidExecutorResultError("完成事件必须有整项活动 completed 状态")
+            if event.event_type == "ACTIVITY.failed" and current.status != ActivityStatus.FAILED:
+                raise InvalidExecutorResultError("失败事件必须有整项活动 failed 状态，子任务失败使用阶段反馈")
+            if event.event_type in {"ACTIVITY.completed", "ACTIVITY.failed"} and "feedback" in event.payload:
+                parse_activity_feedback(ActivityRecord(definition=context.definition, instance=current), event)
             payload = event.payload
             if payload.get("definition_id", current.definition_id) != current.definition_id:
                 raise InvalidExecutorResultError("反馈事件的活动定义不一致")

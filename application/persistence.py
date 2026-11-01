@@ -36,6 +36,8 @@ from .evaluation import evaluate_chat_event, chat_cooldown_key, evaluate_activit
 from .evaluation_persistence import EvaluationPersistence
 from .qq import build_message_time_adjustment
 from .chat_context import read_chat_snapshot, record_feedback_head
+from ..memory.persistence import MemoryPersistence
+from ..memory.models import MemoryIndexRepairReport
 from .appraisal_persistence import AppraisalPersistence, DUE_EVENT_TYPE
 from ..cognition.evaluation import RuleEvaluation
 from ..activity.feedback import ActivityFeedback, STAGE_EVENT_TYPE, FEEDBACK_SOURCE, build_feedback_event, parse_activity_feedback
@@ -49,9 +51,11 @@ class PersonaStore:
     注入 UnitOfWork 实现；业务消费者只依赖各自的最小存储协议。
     """
 
-    def __init__(self, backend: UnitOfWork, *, evaluation: EvaluationSettings | None = None):
+    def __init__(self, backend: UnitOfWork, *, evaluation: EvaluationSettings | None = None, memory=None):
         self._backend = backend
         self._evaluation = evaluation
+        self._memory = memory
+        self.memory_index_report = MemoryIndexRepairReport()
 
     async def __aenter__(self) -> PersonaStore:
         await self.open()
@@ -67,11 +71,14 @@ class PersonaStore:
             yield core, ActivityPersistence(session, core)
 
     async def open(self) -> None:
+        self.memory_index_report = MemoryIndexRepairReport()
         await self._backend.open()
         try:
             # 业务修复属于应用启动，不属于数据库连接或 schema 迁移。
-            async with self._repositories() as (_, activities):
+            async with self._repositories() as (core, activities):
                 await activities.reconcile_status_index()
+                report=await MemoryPersistence(core).reconcile_indexes()
+            self.memory_index_report=report
             await self.reconcile_exhausted_ticks()
         except BaseException:
             await self._backend.close()
@@ -105,20 +112,57 @@ class PersonaStore:
         if event.event_type != "SOCIAL.message_received" or event.provenance != EventProvenance.OBSERVED or event.scope_id is None:
             raise ValueError("聊天评价只接受有作用域的原始入站事件")
         async with self._repositories() as (core, _):
+            was_recorded=await core.get_event(event.event_id) is not None
             await core.record_event(event)
             if platform_timestamp is not None:
                 await core.record_event(build_message_time_adjustment(agent_id, event,
                     platform_timestamp=platform_timestamp, received_at=now))
+            if self._memory is not None:
+                await MemoryPersistence(core).observe(agent_id,event,self._memory,allow_capture=not was_recorded)
             settings = self._evaluation or EvaluationSettings(enabled=False)
             result = evaluate_chat_event(event, settings, agent_id=agent_id, directed=directed)
             return await EvaluationPersistence(core, self._commit_emotion).evaluate_once(
                 agent_id, event, settings, result, now=now, cooldown_key=chat_cooldown_key(event, result),
             )
 
-    async def chat_snapshot(self, agent_id: str, scope_id: str, *, now, rates, labels, include_feedback=True):
+    async def chat_snapshot(self, agent_id: str, scope_id: str, *, now, rates, labels, include_feedback=True,
+                            query="", speaker_id=None, include_memories=True):
         async with self._repositories() as (core, activities):
             return await read_chat_snapshot(core, activities, agent_id, scope_id, now=now,
-                rates=rates, labels=labels, include_feedback=include_feedback)
+                rates=rates, labels=labels, include_feedback=include_feedback,
+                memory_settings=self._memory, query=query, speaker_id=speaker_id, include_memories=include_memories)
+
+    async def memory_operation(self, agent_id, event, action, value, settings, *, platform_timestamp=None, now):
+        now=normalize_schedule_time(now)
+        if event.event_type != "SOCIAL.message_received" or event.scope_id is None or event.timestamp>now:
+            raise ValueError("记忆操作需要有会话归属且不来自未来的 QQ 来源消息")
+        async with self._repositories() as (core, _):
+            repository=MemoryPersistence(core)
+            if action in ("add","delete"):
+                await core.record_event(event)
+                if platform_timestamp is not None:
+                    await core.record_event(build_message_time_adjustment(agent_id,event,
+                        platform_timestamp=platform_timestamp,received_at=now))
+                if action=="add":
+                    return await repository.observe(agent_id,event,settings,text=value,explicit=True)
+                return await repository.delete(agent_id,event,value)
+            if action=="list":
+                return await repository.list(agent_id,event.scope_id,before_id=value or None)
+            if action=="pending":
+                return await repository.pending(agent_id,event.scope_id,after_id=value or None)
+            if action=="show":
+                return await repository.get(agent_id,event.scope_id,value)
+            if action=="history":
+                return await repository.history(agent_id,event.scope_id,value)
+            if action=="search":
+                from ..memory.extraction import actor_id
+                return await repository.recall(agent_id,event.scope_id,settings,query=value,speaker_id=actor_id(event),now=now)
+            raise ValueError("未知记忆操作")
+
+    async def record_memory_draft(self, agent_id, event, draft, settings):
+        async with self._repositories() as (core, _):
+            await core.record_event(event)
+            return await MemoryPersistence(core).write_draft(agent_id,event,draft,settings)
 
     async def latest_evaluation(self, agent_id: str):
         async with self._repositories() as (core, _):

@@ -8,12 +8,12 @@ from uuid import NAMESPACE_URL, uuid5
 
 from pydantic import JsonValue
 
-from activity.executor import (
+from ..executor import (
     ActivityContext, ActivityExecutionError, ActivityExecutionResult,
     ExecutorCapabilities, InvalidActivityStatusError,
 )
-from activity.models import ActivityInstance, ActivityStatus, ExecutionMode
-from core.events import AgentEvent, EventProvenance
+from ..models import ActivityInstance, ActivityStatus, ExecutionMode
+from ...core.events import AgentEvent, EventProvenance
 
 
 _TERMINAL_STATUSES = {ActivityStatus.COMPLETED, ActivityStatus.FAILED, ActivityStatus.CANCELLED}

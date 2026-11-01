@@ -9,8 +9,8 @@ from pydantic import (
     AwareDatetime, BaseModel, ConfigDict, StrictBool, field_validator, model_validator,
 )
 
-from activity.models import ActivityDefinition, ActivityInstance
-from core.events import AgentEvent
+from .models import ActivityDefinition, ActivityInstance
+from ..core.events import AgentEvent
 
 
 class ActivityExecutionError(ValueError):
