@@ -155,7 +155,7 @@ class ChatContextTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.host.store.get_state(self.settings.agent_id),before)
         self.assertEqual((await self.host.store.list_active_activities(self.settings.agent_id))[0],activity)
         with closing(sqlite3.connect(path)) as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0],7)
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0],9)
             row=db.execute("SELECT status,instance_json FROM activity_instances WHERE activity_id=?",(activity.instance.activity_id,)).fetchone()
             self.assertEqual(row,("running",raw))
             self.assertEqual(db.execute("SELECT COUNT(*) FROM feedback_heads").fetchone()[0],0)

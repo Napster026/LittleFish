@@ -395,5 +395,47 @@
       "affinity_positive_baseline": 0.5
     },
     "hint": "每角色/平台/用户独立保存熟悉度和互动倾向。仅实际新入站、默认私聊；群聊需显式开启且指向角色。复用既有规则 ID，不增加模型调用；评价关闭时只累积真实互动的熟悉度。冷却与预算跨会话共用，正负变化合计受每日绝对值上限约束。历史消息不补算。/persona_relationship [show|history] 仅查询当前用户，历史只限当前会话。关系只是互动估计，不代表信任或权限。保存后重载。 倾向日结默认 UTC+8 每日 04:00，可把 affinity_settlement_hour 改为 6。到点前仍属上一结算日。负倾向按 min(0,max(x*0.5,x+0.1)) 回零；正值 0..0.5 保留，高于 0.5 的超额部分每日减半。0.5 沿用当前数值刻度，不是 50。离线按经过日数折叠补算，不改变熟悉度、最近互动、聊天冷却或额度；日回归回执为同用户共享的数值维护。"
+  },
+  "conversation": {
+    "description": "受控续聊（不增加分类模型调用）",
+    "type": "dict",
+    "default": {
+      "enabled": true,
+      "private_only": true,
+      "window_seconds": 120,
+      "max_followups": 3,
+      "max_message_age_seconds": 30,
+      "end_phrases": [
+        "先聊到这",
+        "不聊了",
+        "结束聊天",
+        "再见",
+        "拜拜"
+      ],
+      "defer_new_activities": true
+    },
+    "hint": "默认仅绑定私聊。群聊须显式设置 private_only=false；同一会话只跟随最近正常唤醒的对话对象。观察到非流式模型回复的发送阶段钩子后，允许该用户在120秒内免唤醒续聊，最多连续3次。指向他人、指令、过期或重投消息不扩展唤醒。钩子不是送达确认；流式回复暂不开窗。/persona_conversation 查看状态。保存后重载。 defer_new_activities 默认开启：准备回复或等待可用续聊时暂缓新活动与 pending 接续；running 活动继续，paused 不自动恢复。结束或到期重新仲裁；到期使用现有调度器的单次计划，无周期空结算。"
+  },
+  "expression": {
+    "description": "主动表达（默认仅预览，不生成或发送）",
+    "type": "dict",
+    "default": {
+      "enabled": true,
+      "send_enabled": false,
+      "targets": [],
+      "social_threshold": 70,
+      "cooldown_seconds": 21600,
+      "daily_limit": 2,
+      "min_silence_seconds": 1800,
+      "max_interaction_age_seconds": 604800,
+      "intent_ttl_seconds": 120,
+      "generation_timeout_seconds": 30,
+      "send_timeout_seconds": 15,
+      "quiet_start_hour": 23,
+      "quiet_end_hour": 8,
+      "utc_offset_minutes": 480,
+      "max_body_chars": 160
+    },
+    "hint": "targets 格式 [{\"platform_id\":\"LittleFish\",\"user_id\":\"QQ号\"}]，必须同时在 qq_private_ids/qq_platform_ids 绑定范围内，且近期有实际 aiocqhttp 私聊入站与现有会话。预览不调用模型，不阻挡原活动选择，但保守消耗冷却和日预算；send_enabled=true 才允许生成与发送。待回复/活动占用时不主动打断；北京时间23:00至08:00安静，同起止小时代表不设安静时段。网络发送结果不确定不自动重试。/persona_expression 只读诊断。保存后重载。 v0.9.1：/persona_expression [show|cancel|pause|resume]。cancel 只取消当前未发送意图；pause 持久关闭表达并取消待发送意图；resume 沿用原 send_enabled，不重发旧意图、不重置预算。发送在途不能确认撤回。实际意图到期由现有调度器触发重新仲裁；预览无到期任务。"
   }
 }

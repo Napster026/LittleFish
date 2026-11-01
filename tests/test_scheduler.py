@@ -367,7 +367,7 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.storage.get_event(result.events[0].event_id), result.events[0])
         await self.storage.create_schedule(self.event())
         with closing(sqlite3.connect(self.path)) as connection:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 7)
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 9)
 
     async def test_failed_v2_upgrade_rolls_back_new_table_and_version(self):
         await self.storage.close()

@@ -12,6 +12,7 @@ from .persona_agent.application.host import PersonaHost
 from .persona_agent.application.qq import adapt_qq_message, is_qq_event, qq_scope
 from .persona_agent.application.settings import HostSettings
 from .persona_agent.application.chat_context import apply_prompt_context
+from .persona_agent.application.astrbot_expression import AstrBotExpressionAdapter
 
 
 class QQCaptureFilter(filter.CustomFilter):
@@ -27,6 +28,7 @@ class QQCaptureFilter(filter.CustomFilter):
 class PersonaPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
+        self.context=context
         self.config = config
         self.host = None
         QQCaptureFilter.plugin_ref = weakref.ref(self)
@@ -42,10 +44,23 @@ class PersonaPlugin(Star):
             self.config["autonomous_enabled"], self.config["disabled_activities"] = old_enabled, old_disabled
             raise
 
+    def _save_expression(self,settings):
+        missing="expression" not in self.config
+        previous=self.config.get("expression")
+        self.config["expression"]=settings.model_dump(mode="json")
+        try:
+            self.config.save_config()
+        except BaseException:
+            if missing:self.config.pop("expression",None)
+            else:self.config["expression"]=previous
+            raise
+
     async def initialize(self):
         settings = HostSettings.model_validate(dict(self.config))
+        expression_adapter=AstrBotExpressionAdapter(self.context)
         self.host = PersonaHost(settings, StarTools.get_data_dir("astrbot_plugin_persona"),
-                                persist_controls=self._save_controls)
+                                persist_controls=self._save_controls,generate_expression=expression_adapter.generate,
+                                send_expression=expression_adapter.send,persist_expression=self._save_expression)
         try:
             await self.host.start()
         except BaseException:
@@ -74,13 +89,43 @@ class PersonaPlugin(Star):
         return (scope["group_id"] in cfg.qq_group_ids if scope["group_id"]
                 else scope["sender_id"] in cfg.qq_private_ids)
 
+    def _conversation_blocked(self, event):
+        if event.get_extra("handlers_parsed_params", {}) or not event.get_message_str().strip():
+            return True
+        if event.get_message_str().lstrip().startswith("/"):
+            return True
+        # 未唤醒的群消息如明确指向别人，不能被当前续聊窗口截走。
+        messages=getattr(event.message_obj,"message",()) or ()
+        for part in messages:
+            name=type(part).__name__
+            if name=="AtAll":
+                return True
+            if name=="At" and str(getattr(part,"qq",""))!=str(event.get_self_id()):
+                return True
+            if name=="Reply" and str(getattr(part,"sender_id",""))!=str(event.get_self_id()):
+                return True
+        return False
+
     @filter.custom_filter(QQCaptureFilter, False)
     async def receive_message(self, event: AstrMessageEvent):
         if not self._capture_allowed(event) or event.get_extra("handlers_parsed_params", {}):
             return
         try:
-            await self.host.ingest(adapt_qq_message(event),
-                                   directed_to_agent=bool(getattr(event, "is_at_or_wake_command", False)))
+            incoming=adapt_qq_message(event)
+            directed=bool(getattr(event,"is_at_or_wake_command",False))
+            follow=False
+            if not event.get_extra("persona_conversation_checked",False):
+                event.set_extra("persona_conversation_checked",True)
+                try:
+                    follow=await self.host.conversation_receive(incoming,directed=directed,
+                        blocked=self._conversation_blocked(event))
+                except Exception:
+                    self.logger.exception("Persona 续聊状态处理失败，沿用原唤醒规则")
+            if follow:
+                # 只放行当前事件的默认生成链，不单独调用模型或发送第二份回复。
+                event.is_at_or_wake_command=True
+                event.set_extra("persona_followup",True)
+            await self.host.ingest(incoming,directed_to_agent=directed or follow)
         except Exception:
             self.logger.exception("Persona QQ 入站处理失败")
 
@@ -95,6 +140,8 @@ class PersonaPlugin(Star):
     @filter.on_llm_request()
     async def attach_chat_context(self, event: AstrMessageEvent, req: ProviderRequest):
         try:
+            if self._capture_allowed(event) and not self._conversation_blocked(event):
+                event.set_extra("persona_model_requested",True)
             # 也清除同一请求对象先前属于本插件的块，避免重试或跨会话复用残留。
             apply_prompt_context(req, None)
             if not self._chat_context_allowed(event) or event.get_extra("handlers_parsed_params", {}):
@@ -107,6 +154,21 @@ class PersonaPlugin(Star):
                 self.host.remember_context(context)
         except Exception:
             self.logger.exception("Persona 上下文组装失败，沿用原聊天请求")
+
+    @filter.after_message_sent()
+    async def observe_chat_sent(self, event: AstrMessageEvent):
+        # v4.29.3 流式路径提前返回，不猜测其发送状态。框架钩子也不是送达回执。
+        if (not self._capture_allowed(event) or self._conversation_blocked(event)
+                or not event.get_extra("persona_model_requested",False)
+                or not getattr(event,"_has_send_oper",False)):
+            return
+        result=event.get_result()
+        if result is None or not result.is_llm_result() or not result.chain:
+            return
+        try:
+            await self.host.conversation_sent(adapt_qq_message(event))
+        except Exception:
+            self.logger.exception("Persona 回复阶段记录失败")
 
     async def _command(self, event, operation, argument="", activity_id=""):
         # 装饰器以外保留入口校验，避免直接调用绕过管理员限制。
@@ -137,6 +199,20 @@ class PersonaPlugin(Star):
                     speaker_id=f"{event.get_platform_id()}:user:{event.get_sender_id()}",is_private=not bool(event.get_group_id()),
                     platform_id=event.get_platform_id(),user_id=event.get_sender_id())
                 return "当前上下文预览（不调用模型）：\n"+context.preview()
+            if operation == "expression":
+                if event.get_group_id() or not self._capture_allowed(event):
+                    return "主动表达诊断仅在绑定管理员私聊中可用"
+                if argument in ("", "show"):return await self.host.expression_status()
+                if argument=="cancel":return await self.host.cancel_expression()
+                if argument in ("pause","resume"):
+                    await self.host.set_expression_enabled(argument=="resume")
+                    return ("主动表达已暂停；尚未发送的意图已撤销，发送在途无法保证撤回。" if argument=="pause" else
+                        "主动表达已恢复；沿用原预览/发送模式与冷却预算，不重发旧意图。")
+                return "用法：/persona_expression [show|cancel|pause|resume]"
+            if operation == "conversation":
+                if not self._capture_allowed(event):
+                    return "本会话未绑定，不能查询续聊状态"
+                return await self.host.conversation_status(event.unified_msg_origin)
             if operation == "relationship":
                 if not self._capture_allowed(event):
                     return "本会话未绑定，不能查询关系档案"
@@ -147,7 +223,7 @@ class PersonaPlugin(Star):
                 return await self.host.memory_command(adapt_qq_message(event),argument,activity_id)
             if operation in ("pause", "resume"):
                 await self.host.set_controls(enabled=operation == "resume")
-                return ("自主启动已暂停，现有活动继续运行。需要暂停活动时使用 /persona_activity pause。"
+                return ("自主启动已暂停，现有活动继续运行；未发送的主动表达已取消，发送在途无法确认撤回。需要暂停活动时使用 /persona_activity pause。"
                         if operation == "pause" else "自主启动已恢复，将在后续检查时仲裁。")
             if operation in ("disable", "enable"):
                 await self.host.set_controls(activity_id=argument, disabled=operation == "disable")
@@ -164,6 +240,8 @@ class PersonaPlugin(Star):
                 "/persona_feedback [活动实例ID]：查看阶段内容",
                 "/persona_context [now|last]：预览当前或最近实际注入的上下文",
                 "/persona_memory add|list|pending|show|history|delete|search：管理当前会话记忆",
+                "/persona_expression [show|cancel|pause|resume]：管理主动表达（绑定管理员私聊）",
+                "/persona_conversation：查看当前会话的续聊窗口与对话对象",
                 "/persona_relationship [show|history]：查看当前用户的关系估计与本会话变化",
             ))
         except (ValueError, RuntimeError) as exc:
@@ -259,4 +337,16 @@ class PersonaPlugin(Star):
     @filter.command("persona_relationship")
     async def persona_relationship(self,event: AstrMessageEvent,action: str="show"):
         if (text:=await self._command(event,"relationship",action)) is not None:
+            yield event.plain_result(text)
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("persona_conversation")
+    async def persona_conversation(self,event: AstrMessageEvent):
+        if (text:=await self._command(event,"conversation")) is not None:
+            yield event.plain_result(text)
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("persona_expression")
+    async def persona_expression(self,event: AstrMessageEvent,action: str="show"):
+        if (text:=await self._command(event,"expression",action)) is not None:
             yield event.plain_result(text)

@@ -84,3 +84,41 @@ class ArbiterTests(unittest.TestCase):
             ArbitrationPolicy(autonomous_enabled="false")
         with self.assertRaises(ValidationError):
             ArbitrationContext(recoverable_activity_ids={"nonexistent"})
+
+
+class ConversationArbiterTests(unittest.TestCase):
+    def test_social_occupancy_blocks_start_even_with_extreme_utility(self):
+        for reason in ("reply_pending","waiting_followup"):
+            with self.subTest(reason=reason):
+                decision=BehaviorArbiter().decide(ArbitrationContext(conversation_reason=reason),
+                    (candidate("rest",100000),))
+                self.assertEqual(decision.winner.kind,BehaviorKind.IDLE)
+                self.assertEqual(decision.reason,reason)
+                self.assertEqual(decision.conversation_reason,reason)
+                self.assertEqual(decision.assessments[0].reason,reason)
+
+    def test_pending_waits_running_continues_and_paused_stays_paused(self):
+        reason="reply_pending"
+        pending=ArbitrationContext(active=(active("pending"),),recoverable_activity_ids={"existing"},
+            conversation_reason=reason)
+        decision=BehaviorArbiter().decide(pending,(candidate("rest",0,activity_id="existing"),))
+        self.assertEqual(decision.winner.kind,BehaviorKind.IDLE)
+        self.assertEqual(decision.reason,reason)
+        running=BehaviorArbiter().decide(ArbitrationContext(active=(active(),),conversation_reason=reason),
+            (candidate("rest"),))
+        self.assertEqual(running.winner.kind,BehaviorKind.CONTINUE_ACTIVITY)
+        self.assertEqual(running.reason,"continue_running")
+        self.assertEqual(running.conversation_reason,reason)
+        paused=BehaviorArbiter().decide(ArbitrationContext(active=(active("paused"),),conversation_reason=reason),
+            (candidate("rest"),))
+        self.assertEqual(paused.reason,"paused")
+
+    def test_disabled_autonomy_and_invalid_reason_remain_hard_constraints(self):
+        decision=BehaviorArbiter(ArbitrationPolicy(autonomous_enabled=False)).decide(
+            ArbitrationContext(conversation_reason="waiting_followup"),(candidate("rest"),))
+        self.assertEqual(decision.reason,"autonomy_disabled")
+        with self.assertRaises(ValidationError):
+            ArbitrationContext(conversation_reason="chat text")
+        from persona_agent.core.arbiter import BehaviorDecision
+        old={"winner":{"candidate_id":"idle","kind":"idle"},"reason":"no_candidate"}
+        self.assertIsNone(BehaviorDecision.model_validate(old).conversation_reason)

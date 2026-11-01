@@ -326,7 +326,7 @@ class PluginBoundaryTests(unittest.IsolatedAsyncioTestCase):
         events.AstrMessageEvent = QQEvent
         class CustomFilter:
             def __init__(self, *args, **kwargs): pass
-        events.filter = types.SimpleNamespace(command=decorator, permission_type=decorator, on_llm_request=decorator,
+        events.filter = types.SimpleNamespace(command=decorator, permission_type=decorator, on_llm_request=decorator, after_message_sent=decorator,
                                               custom_filter=decorator, CustomFilter=CustomFilter,
                                               event_message_type=decorator, EventMessageType=types.SimpleNamespace(ALL=1),
                                               PermissionType=types.SimpleNamespace(ADMIN=1))

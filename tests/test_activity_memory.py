@@ -498,7 +498,7 @@ class ActivityMemoryTests(unittest.IsolatedAsyncioTestCase):
         request=draft.model_dump(mode="json",exclude={"activity"})
         digest=canonical_json({"sha256":sha256(canonical_json(request).encode()).hexdigest()})
         with closing(sqlite3.connect(self.path)) as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0],7)
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0],9)
             row=db.execute("SELECT record_json,index_version FROM memories WHERE memory_id=?",(result.memory_id,)).fetchone()
             self.assertNotIn("activity",json.loads(row[0]))
             self.assertEqual(row[1],2)

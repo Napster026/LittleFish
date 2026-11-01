@@ -138,7 +138,24 @@ _MIGRATE_V6_TO_V7 = (
     "CREATE INDEX relationship_history_idx ON relationship_receipts (agent_id, platform_id, user_id, scope_id, sort_key)",
 )
 
+_MIGRATE_V7_TO_V8 = (
+    """CREATE TABLE conversations (
+        agent_id TEXT NOT NULL REFERENCES agent_states(agent_id), scope_id TEXT NOT NULL,
+        revision INTEGER NOT NULL CHECK (revision >= 1), state_json TEXT NOT NULL,
+        PRIMARY KEY (agent_id, scope_id)
+    )""",
+)
+
+_MIGRATE_V8_TO_V9 = (
+    """CREATE TABLE expression_heads (
+        agent_id TEXT PRIMARY KEY REFERENCES agent_states(agent_id),
+        revision INTEGER NOT NULL CHECK (revision >= 1), state_json TEXT NOT NULL
+    )""",
+)
+
 _COLUMNS = {
+    "expression_heads": {"agent_id", "revision", "state_json"},
+    "conversations": {"agent_id", "scope_id", "revision", "state_json"},
     "relationships": {"agent_id", "platform_id", "user_id", "revision", "updated_at", "profile_json"},
     "relationship_receipts": {"agent_id", "source_event_id", "scope_id", "platform_id", "user_id", "sort_key", "receipt_json"},
     "memories": {"memory_id", "agent_id", "scope_id", "kind", "visibility", "speaker_id", "about_id",
@@ -305,7 +322,7 @@ class SQLiteStorage:
                         pass
                 async with connection.execute("PRAGMA user_version") as cursor:
                     version = (await cursor.fetchone())[0]
-                if version not in (0, 1, 2, 3, 4, 5, 6, 7):
+                if version not in (0, 1, 2, 3, 4, 5, 6, 7, 8, 9):
                     raise UnsupportedSchemaError(f"不支持数据库结构版本 {version}")
                 if version == 0:
                     for sql in _SCHEMA_V1:
@@ -342,12 +359,22 @@ class SQLiteStorage:
                         async with connection.execute(sql):
                             pass
                     version = 7
+                if version == 7:
+                    for sql in _MIGRATE_V7_TO_V8:
+                        async with connection.execute(sql):
+                            pass
+                    version = 8
+                if version == 8:
+                    for sql in _MIGRATE_V8_TO_V9:
+                        async with connection.execute(sql):
+                            pass
+                    version = 9
                 # 补建辅助索引，不解释业务 JSON。
 
                 async with connection.execute("CREATE INDEX IF NOT EXISTS scheduled_pending_idx "
                                               "ON scheduled_events (agent_id, status, schedule_id)"):
                     pass
-                async with connection.execute("PRAGMA user_version = 7"):
+                async with connection.execute("PRAGMA user_version = 9"):
                     pass
                 await connection.commit()
             except BaseException:

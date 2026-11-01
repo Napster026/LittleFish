@@ -263,7 +263,7 @@ class ActivityStorageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.storage.get_committed_proposal(self.state.agent_id, event.event_id), proposal)
         await self.storage.create_activity(self.definition, self.initial)
         with closing(sqlite3.connect(self.path)) as connection:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 7)
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 9)
 
     async def test_failed_migration_rolls_back_schema_and_version(self):
         await self.storage.close()

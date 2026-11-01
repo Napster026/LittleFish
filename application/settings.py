@@ -15,6 +15,8 @@ from ..cognition.evaluation import EvaluationSettings
 from ..cognition.prompt_builder import ChatContextSettings
 from ..memory.models import MemorySettings
 from ..social.models import RelationshipSettings
+from ..social.conversation import ConversationSettings
+from ..social.expression import ExpressionSettings
 
 
 class InitialEmotion(BaseModel):
@@ -92,6 +94,8 @@ class HostSettings(BaseModel):
     chat_context: ChatContextSettings = Field(default_factory=ChatContextSettings)
     memory: MemorySettings = Field(default_factory=MemorySettings)
     relationships: RelationshipSettings = Field(default_factory=RelationshipSettings)
+    conversation: ConversationSettings = Field(default_factory=ConversationSettings)
+    expression: ExpressionSettings = Field(default_factory=ExpressionSettings)
 
     @field_validator("agent_id")
     @classmethod

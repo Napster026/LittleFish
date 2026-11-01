@@ -303,8 +303,8 @@ class RelationshipStoreTests(unittest.IsolatedAsyncioTestCase):
         await self.ingest(source)
         self.assertIsNone(await self.profile())
         with closing(sqlite3.connect(self.path)) as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0],7)
-            self.assertEqual(len(db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()),14)
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0],9)
+            self.assertEqual(len(db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()),16)
             # 入站重放可能复用既有评价；此处只核对原始事件 JSON。
             self.assertEqual(db.execute("SELECT event_json FROM agent_events WHERE event_id=?",(source.event_id,)).fetchone()[0],raw)
 

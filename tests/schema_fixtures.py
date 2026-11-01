@@ -1,7 +1,23 @@
 """仅供临时测试数据库构造旧 schema；不是生产迁移或降级入口。"""
 
 
+def restore_v8_layout(connection):
+    if connection.execute("PRAGMA foreign_keys").fetchone()[0]:
+        raise ValueError("旧结构夹具需要关闭外键")
+    connection.execute("DROP TABLE IF EXISTS expression_heads")
+    connection.execute("PRAGMA user_version = 8")
+
+
+def restore_v7_layout(connection):
+    restore_v8_layout(connection)
+    if connection.execute("PRAGMA foreign_keys").fetchone()[0]:
+        raise ValueError("旧结构夹具需要关闭外键")
+    connection.execute("DROP TABLE IF EXISTS conversations")
+    connection.execute("PRAGMA user_version = 7")
+
+
 def restore_v6_layout(connection):
+    restore_v7_layout(connection)
     if connection.execute("PRAGMA foreign_keys").fetchone()[0]:
         raise ValueError("旧结构夹具必须使用独立且关闭外键的临时连接")
     connection.execute("DROP TABLE IF EXISTS relationship_receipts")

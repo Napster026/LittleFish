@@ -97,6 +97,14 @@ class ContextRelationship(BaseModel):
     updated_at: AwareDatetime
 
 
+class ContextOutbound(BaseModel):
+    model_config=ConfigDict(extra="forbid",frozen=True)
+    scope_id: StrictStr
+    actor_id: StrictStr
+    text: StrictStr
+    at: AwareDatetime
+
+
 class ChatSnapshot(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     agent_id: StrictStr
@@ -110,6 +118,7 @@ class ChatSnapshot(BaseModel):
     memories: tuple[ContextMemory, ...] = ()
     speaker_id: StrictStr | None = None
     relationship: ContextRelationship | None = None
+    outbound: ContextOutbound | None = None
 
 
 class PromptContext(BaseModel):
@@ -162,6 +171,10 @@ def build_prompt_context(snapshot: ChatSnapshot, settings: ChatContextSettings, 
             "ranges":{"familiarity":[0,100],"affinity":[-100,100]},
             "familiarity":round(relationship.familiarity,1),"affinity":round(relationship.affinity,3),
             "last_interaction":relationship.last_interaction_at.isoformat(timespec="seconds")}
+    outbound=snapshot.outbound
+    if (outbound is not None and outbound.scope_id==snapshot.scope_id and outbound.actor_id==snapshot.speaker_id
+            and 0<=(snapshot.as_of-outbound.at).total_seconds()<=86400):
+        data["own_outbound"]={"text":_short(outbound.text,160),"basis":"adapter_returned_not_delivery_receipt"}
     truncated = len(snapshot.activities) > 3
     feedback = snapshot.feedback
     sources = ()
@@ -213,7 +226,9 @@ def build_prompt_context(snapshot: ChatSnapshot, settings: ChatContextSettings, 
         nonlocal truncated,sources
         while len(CONTEXT_GUARD)+2+len(encode()) > settings.max_chars:
             truncated = True
-            if "feedback" in data:
+            if "own_outbound" in data:
+                data.pop("own_outbound")
+            elif "feedback" in data:
                 text = data["feedback"]["summary"]
                 if len(text) > 20:
                     data["feedback"]["summary"] = text[:max(1,len(text)//2)]+"…"

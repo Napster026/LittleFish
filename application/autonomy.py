@@ -24,6 +24,7 @@ from ..core.runtime import AgentRuntime
 from ..core.scheduler import normalize_schedule_time
 from ..core.state import AgentState
 from ..persona.emotion import EmotionEngine
+from ..social.expression import ExpressionIntent
 
 
 SELECTION_EVENT_TYPE = "INTERNAL.activity_selected"
@@ -35,10 +36,16 @@ class BehaviorReservation(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     decision: BehaviorDecision
     activity: ActivityRecord | None = None
+    expression: ExpressionIntent | None = None
 
     @model_validator(mode="after")
     def validate_binding(self):
         winner = self.decision.winner
+        if winner.kind==BehaviorKind.EXPRESS:
+            if self.expression is None or self.expression.target.scope_id!=winner.target_scope_id or self.activity is not None:
+                raise ValueError("主动表达必须绑定匹配的意图")
+        elif self.expression is not None:
+            raise ValueError("其他行为不能绑定主动表达意图")
         if winner.kind == BehaviorKind.START_ACTIVITY and self.activity is None:
             raise ValueError("开始行为必须绑定已保存的活动")
         if self.activity is not None:
@@ -53,10 +60,11 @@ class BehaviorReservation(BaseModel):
 def arbitrate_activity(
     selector: ActivitySelector, arbiter: BehaviorArbiter, state: AgentState,
     active: tuple[ActivityRecord, ...], recoverable: frozenset[str],
-    *, to_at: datetime | None = None,
+    *, to_at: datetime | None = None, conversation_reason=None, expression_candidate=None, expression_pending=False,
 ) -> BehaviorDecision:
     """把需求候选和持久化占用快照转换为内核输入；接续使用原定义快照。"""
     context = ArbitrationContext(
+        conversation_reason=conversation_reason, expression_pending=expression_pending,
         active=tuple(ActiveBehavior(
             activity_id=r.instance.activity_id, definition_id=r.instance.definition_id,
             mode=r.instance.mode.value, status=r.instance.status.value,
@@ -80,6 +88,8 @@ def arbitrate_activity(
         definition_id=r.instance.definition_id, activity_id=r.instance.activity_id,
         mode=r.instance.mode.value,
     ) for r in active if r.instance.activity_id in recoverable)
+    if expression_candidate is not None:
+        candidates+=(expression_candidate,)
     return arbiter.decide(context, candidates)
 
 
@@ -111,7 +121,7 @@ class AutonomousActivityService:
         self, agent_id: str, storage: AutonomyStore, selector: ActivitySelector,
         activities: ActivityService, runtime: AgentRuntime, *,
         clock: Callable[[], datetime] | None = None,
-        arbiter: BehaviorArbiter | None = None,
+        arbiter: BehaviorArbiter | None = None, dispatch_expression=None,
     ):
         AgentState.validate_agent_id(agent_id)
         if activities.agent_id != agent_id or runtime.agent_id != agent_id:
@@ -123,6 +133,7 @@ class AutonomousActivityService:
         self._activities, self._runtime = activities, runtime
         self._arbiter = arbiter if arbiter is not None else BehaviorArbiter()
         self.last_decision: BehaviorDecision | None = None
+        self._dispatch_expression=dispatch_expression
         self._clock = clock if clock is not None else lambda: datetime.now(timezone.utc)
         self._lock = asyncio.Lock()
 
@@ -134,6 +145,10 @@ class AutonomousActivityService:
                 now=normalize_schedule_time(self._clock()), arbiter=self._arbiter,
             )
             self.last_decision = reservation.decision
+            if reservation.decision.winner.kind==BehaviorKind.EXPRESS:
+                if self._dispatch_expression is not None:
+                    self._dispatch_expression(reservation.expression)
+                return None
             if reservation.decision.winner.kind != BehaviorKind.START_ACTIVITY:
                 return None
             record = reservation.activity

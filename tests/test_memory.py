@@ -522,7 +522,7 @@ class MemoryTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(MemoryPersistence,"_replace_terms",new=failed):
             with self.assertRaises(RuntimeError):await self.store.open()
         with closing(sqlite3.connect(self.path)) as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0],7)
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0],9)
             self.assertEqual(db.execute("SELECT record_json,index_version,updated_at FROM memories WHERE memory_id=?",(identifier,)).fetchone(),(raw,0,""))
             self.assertEqual({r[0] for r in db.execute("SELECT term FROM memory_terms WHERE memory_id=?",(identifier,))},{"逛了","了街"})
         await self.store.open()
@@ -674,7 +674,7 @@ class MemoryTests(unittest.IsolatedAsyncioTestCase):
         await self.store.open()
         self.assertEqual(await self.store.get_state("persona-001"),before)
         with closing(sqlite3.connect(self.path)) as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0],7)
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0],9)
 
 
 class IndexRepairPagingTests(unittest.IsolatedAsyncioTestCase):

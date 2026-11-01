@@ -40,9 +40,17 @@ from .activity_memory import record_activity_memory
 from .relationship import relationship_signal
 from ..social.persistence import RelationshipPersistence
 from ..social.clock import relationship_day_plans, parse_relationship_day, build_relationship_day
+from ..social.conversation_persistence import ConversationPersistence
+from ..social.conversation import conversation_occupancy
+from ..social.conversation_clock import deadline_for, parse_conversation_deadline, build_conversation_deadline
 from ..memory.persistence import MemoryPersistence
 from ..memory.models import MemoryIndexRepairReport
 from .appraisal_persistence import AppraisalPersistence, DUE_EVENT_TYPE
+from .expression import ExpressionPersistence
+from ..social.expression import intent_busy, gate
+from ..social.expression_clock import expression_deadline_for, parse_expression_deadline, build_expression_deadline
+from ..social.conversation import ConversationState
+from datetime import timedelta
 from ..cognition.evaluation import RuleEvaluation
 from ..activity.feedback import ActivityFeedback, STAGE_EVENT_TYPE, FEEDBACK_SOURCE, build_feedback_event, parse_activity_feedback
 from ..persistence.errors import ActivityNotFoundError, EventConflictError
@@ -55,11 +63,16 @@ class PersonaStore:
     注入 UnitOfWork 实现；业务消费者只依赖各自的最小存储协议。
     """
 
-    def __init__(self, backend: UnitOfWork, *, evaluation: EvaluationSettings | None = None, memory=None, relationships=None):
+    def __init__(self, backend: UnitOfWork, *, evaluation: EvaluationSettings | None = None, memory=None, relationships=None,
+                 conversation=None, conversation_scope_allowed=None, expression=None, expression_target_allowed=None):
         self._backend = backend
         self._evaluation = evaluation
         self._memory = memory
         self._relationships = relationships
+        self._expression=expression
+        self._expression_target_allowed=expression_target_allowed
+        self._conversation = conversation
+        self._conversation_scope_allowed = conversation_scope_allowed
         self.memory_index_report = MemoryIndexRepairReport()
 
     async def __aenter__(self) -> PersonaStore:
@@ -96,6 +109,189 @@ class PersonaStore:
         async with self._repositories() as (_, activities):
             await activities.reconcile_exhausted_ticks()
 
+    async def get_conversation(self, agent_id, scope_id):
+        async with self._repositories() as (core, _):
+            return await ConversationPersistence(core.session).get(agent_id,scope_id)
+
+    async def conversation_receive(self, agent_id, event, **kwargs):
+        async with self._repositories() as (core, _):
+            if await core.get_event(event.event_id) is not None:
+                return False
+            repository=ConversationPersistence(core.session)
+            follow=await repository.receive(agent_id,event,**kwargs)
+            await self._schedule_conversation(core,await repository.get(agent_id,event.scope_id),kwargs["now"])
+            return follow
+
+    async def conversation_sent(self, agent_id, event, **kwargs):
+        async with self._repositories() as (core, _):
+            repository=ConversationPersistence(core.session)
+            await repository.sent(agent_id,event,**kwargs)
+            await self._schedule_conversation(core,await repository.get(agent_id,event.scope_id),kwargs["now"])
+
+    def _conversation_allowed(self, item):
+        if self._conversation is None or not self._conversation.enabled:
+            return False
+        if self._conversation.private_only and ":GroupMessage:" in item.scope_id:
+            return False
+        return self._conversation_scope_allowed is None or self._conversation_scope_allowed(item)
+
+    async def _schedule_conversation(self, core, item, now):
+        if item is not None and self._conversation_allowed(item) and conversation_occupancy(item,now,self._conversation):
+            await core.create_schedule(deadline_for(item))
+
+    async def _conversation_reason(self, core, agent_id, now):
+        if self._conversation is None or not self._conversation.enabled or not self._conversation.defer_new_activities:
+            return None
+        waiting=None
+        async for item in ConversationPersistence(core.session).iter_states(agent_id):
+            if not self._conversation_allowed(item):
+                continue
+            reason=conversation_occupancy(item,now,self._conversation)
+            if reason=="reply_pending":
+                return reason
+            if reason is not None:
+                waiting=reason
+        return waiting
+
+    async def conversation_arbitration_reason(self, agent_id, *, now):
+        async with self._repositories() as (core, _):
+            return await self._conversation_reason(core,agent_id,normalize_schedule_time(now))
+
+    async def start_conversation_clock(self, agent_id, *, now):
+        if self._conversation is None or not self._conversation.enabled or not self._conversation.defer_new_activities:
+            return
+        async with self._repositories() as (core, _):
+            async for item in ConversationPersistence(core.session).iter_states(agent_id):
+                await self._schedule_conversation(core,item,normalize_schedule_time(now))
+
+    async def handle_conversation_deadline(self, agent_id, event, *, now):
+        now=normalize_schedule_time(now)
+        spec=parse_conversation_deadline(event)
+        if spec.agent_id!=agent_id or spec.expires_at>now:
+            raise ValueError("会话到期事件角色错误或尚未到期")
+        async with self._repositories() as (core, _):
+            plan=await core.get_schedule(agent_id,event.event_id)
+            if plan is None or plan.schedule!=build_conversation_deadline(spec):
+                raise ValueError("会话到期事件缺少匹配的持久化计划")
+            item=await ConversationPersistence(core.session).get(agent_id,spec.scope_id)
+            if (item is None or not self._conversation_allowed(item) or not self._conversation.defer_new_activities
+                    or item.revision!=spec.revision or item.expires_at!=spec.expires_at
+                    or item.phase=="closed"):
+                return False
+            await core.record_event(event)
+            return True
+
+    async def _expression_busy(self, core, agent_id, now):
+        if self._expression is None or not self._expression.enabled or not self._expression.send_enabled:return False
+        head=await ExpressionPersistence(core).get(agent_id)
+        return head is not None and intent_busy(head.intent,now)
+
+    async def expression_head(self, agent_id):
+        async with self._repositories() as (core, _):
+            return await ExpressionPersistence(core).get(agent_id)
+
+    async def cancel_expression(self, agent_id, *, now, reason="manual_cancel", include_preview=False):
+        now=normalize_schedule_time(now)
+        async with self._repositories() as (core, _):
+            repo=ExpressionPersistence(core);head=await repo.get(agent_id)
+            if head is None:return False,None
+            item=head.intent
+            cancellable=("pending","generating","preview") if include_preview else ("pending","generating")
+            if item.status not in cancellable:return False,item
+            return True,await repo.transition(head,"cancelled",now,reason=reason)
+
+    async def recover_expression(self, agent_id, *, now):
+        now=normalize_schedule_time(now)
+        async with self._repositories() as (core, _):
+            repo=ExpressionPersistence(core);head=await repo.get(agent_id)
+            if head is None:return None
+            item=head.intent
+            if item.status in ("generating","sending"):
+                await repo.transition(head,"unknown" if item.status=="sending" else "failed",now,reason="restart_interrupted")
+                return None
+            if item.status!="pending":return None
+            if self._expression is None or not self._expression.enabled or not self._expression.send_enabled:
+                await repo.transition(head,"cancelled",now,reason="expression_disabled")
+                return None
+            # 兼容 v0.9.0 缺少到期计划的旧 pending；过期计划也需交调度器触发恢复仲裁。
+            await core.create_schedule(expression_deadline_for(item))
+            return item if now<item.expires_at else None
+
+    async def handle_expression_deadline(self, agent_id, event, *, now):
+        now=normalize_schedule_time(now)
+        spec=parse_expression_deadline(event)
+        if spec.agent_id!=agent_id or now<spec.expires_at:
+            raise ValueError("主动表达到期事件角色错误或尚未到期")
+        async with self._repositories() as (core, _):
+            plan=await core.get_schedule(agent_id,event.event_id)
+            if plan is None or plan.schedule!=build_expression_deadline(spec):
+                raise ValueError("主动表达到期事件缺少匹配的持久化计划")
+            previous=await core.get_event(event.event_id)
+            if previous is not None:
+                if previous!=event:raise ValueError("主动表达到期回执冲突")
+                # 到期事务已提交但后续仲裁可能失败：原键继续，不重复改变意图。
+                return True,None
+            repo=ExpressionPersistence(core);head=await repo.get(agent_id)
+            if head is None:return False,None
+            item=head.intent
+            if (item.intent_id!=spec.intent_id or item.expires_at!=spec.expires_at
+                    or item.target.scope_id!=spec.scope_id or item.status not in ("pending","generating","sending")):
+                return False,None
+            changed=await repo.transition(head,"unknown" if item.status=="sending" else "cancelled",now,reason="intent_expired")
+            await core.record_event(event)
+            return True,changed
+
+    async def _expression_valid(self, core, activities, item, now):
+        settings=self._expression
+        if (settings is None or not settings.enabled or not settings.send_enabled or now>=item.expires_at
+                or gate(settings,now) is not None or item.target not in settings.targets
+                or (self._expression_target_allowed is not None and not self._expression_target_allowed(item.target))):
+            return False
+        state=await core.get_state(item.agent_id)
+        if state is None or state.needs.social_need<settings.social_threshold:return False
+        if await activities.list_active_activities(item.agent_id):return False
+        if await self._conversation_reason(core,item.agent_id,now):return False
+        current=await ConversationPersistence(core.session).get(item.agent_id,item.target.scope_id)
+        return current is not None and current.source_event_id==item.source_event_id
+
+    async def claim_expression(self, agent_id, intent_id, *, now, autonomous_enabled, phase="generate", body=""):
+        async with self._repositories() as (core, activities):
+            repo=ExpressionPersistence(core);head=await repo.get(agent_id)
+            if phase not in ("generate","send"):raise ValueError("非法主动表达执行阶段")
+            expected="pending" if phase=="generate" else "generating"
+            if head is None or head.intent.intent_id!=intent_id or head.intent.status!=expected:return None
+            if not autonomous_enabled or not await self._expression_valid(core,activities,head.intent,now):
+                await repo.transition(head,"cancelled",now,reason="revalidation_failed");return None
+            if phase!="generate" and (not body.strip() or len(body)>self._expression.max_body_chars):
+                await repo.transition(head,"failed",now,reason="invalid_body");return None
+            return await repo.transition(head,"generating" if phase=="generate" else "sending",now,
+                body=body if phase!="generate" else None)
+
+    async def finish_expression(self, agent_id, intent_id, *, now, status, reason=""):
+        async with self._repositories() as (core, _):
+            repo=ExpressionPersistence(core);head=await repo.get(agent_id)
+            if head is None or head.intent.intent_id!=intent_id or head.intent.status not in ("generating","sending"):
+                return None
+            if status not in ("sent","failed","unknown","cancelled"):raise ValueError("非法主动表达结束状态")
+            if status=="sent" and head.intent.status!="sending":raise ValueError("发送前不能记录发送成功")
+            item=await repo.transition(head,status,now,reason=reason or status)
+            if status=="sent" and self._conversation is not None and self._conversation.enabled:
+                previous=await ConversationPersistence(core.session).get(agent_id,item.target.scope_id)
+                # 有新入站时不覆盖其对话状态，已在途的发送也不伪装成新用户消息。
+                if previous is not None and previous.source_event_id==item.source_event_id:
+                    state=ConversationState(agent_id=agent_id,scope_id=item.target.scope_id,
+                        platform_id=item.target.platform_id,user_id=item.target.user_id,source_event_id=item.intent_id,
+                        own_outbound_event_id=item.intent_id+":sent",phase="send_hook_observed",updated_at=now,expires_at=now+timedelta(seconds=self._conversation.window_seconds),
+                        followups=0,revision=previous.revision+1)
+                    await ConversationPersistence(core.session).save(state,previous)
+                    await self._schedule_conversation(core,state,now)
+                elif previous is not None:
+                    # 在途发送后有新入站：只补自己的出站引用，不重开或延长用户会话。
+                    state=previous.model_copy(update={"own_outbound_event_id":item.intent_id+":sent","revision":previous.revision+1})
+                    await ConversationPersistence(core.session).save(state,previous)
+                    await self._schedule_conversation(core,state,now)
+            return item
+
     async def create_state(self, state: AgentState) -> None:
         async with self._repositories() as (core, _):
             await core.create_state(state)
@@ -118,6 +314,8 @@ class PersonaStore:
             raise ValueError("聊天评价只接受有作用域的原始入站事件")
         async with self._repositories() as (core, _):
             was_recorded=await core.get_event(event.event_id) is not None
+            if not was_recorded and self._expression is not None:
+                await ExpressionPersistence(core).cancel_inbound(agent_id,event,now)
             await core.record_event(event)
             if platform_timestamp is not None:
                 await core.record_event(build_message_time_adjustment(agent_id, event,
@@ -603,22 +801,42 @@ class PersonaStore:
                     active = await activities.list_active_activities(agent_id)
                     decision = arbitrate_activity(
                         selector, arbiter, state, active, await self._recoverable_ids(core, active),
-                        to_at=now,
+                        to_at=now, conversation_reason=await self._conversation_reason(core,agent_id,now),
+                        expression_pending=await self._expression_busy(core,agent_id,now),
                     )
                     if (decision.winner.kind != BehaviorKind.START_ACTIVITY
                             or decision.winner.activity_id != saved.instance.activity_id):
                         saved = None
-                return BehaviorReservation(decision=decision, activity=saved)
+                expression=None
+                if decision.winner.kind==BehaviorKind.EXPRESS:
+                    head=await ExpressionPersistence(core).get(agent_id)
+                    if head is None or head.intent.intent_id!=receipt.payload.get("expression_id"):
+                        return BehaviorReservation(decision=BehaviorDecision(
+                            winner=BehaviorCandidate(candidate_id="idle",kind=BehaviorKind.IDLE),reason="expression_obsolete"))
+                    expression=head.intent
+                return BehaviorReservation(decision=decision, activity=saved,expression=expression)
             state = await core.get_state(agent_id)
             if state is None:
                 raise StateNotFoundError("请先创建角色")
             if now < state.updated_at:
                 raise ValueError("选择时间不能早于角色更新时间")
             active = await activities.list_active_activities(agent_id)
-            decision = arbitrate_activity(
-                selector, arbiter, state, active, await self._recoverable_ids(core, active),
-                to_at=now,
-            )
+            social_reason=await self._conversation_reason(core,agent_id,now)
+            expression_repo=ExpressionPersistence(core)
+            proposal=await expression_repo.candidate(agent_id,state,self._expression,now,self._expression_target_allowed,
+                occupied=social_reason is not None,active=bool(active)) if arbiter.policy.autonomous_enabled else None
+            arguments=dict(to_at=now,conversation_reason=social_reason,
+                expression_pending=await self._expression_busy(core,agent_id,now))
+            decision = arbitrate_activity(selector,arbiter,state,active,await self._recoverable_ids(core,active),
+                expression_candidate=None if proposal is None else proposal[0],**arguments)
+            expression=None
+            preview_id=None
+            if decision.winner.kind==BehaviorKind.EXPRESS:
+                item=await expression_repo.reserve(agent_id,decision_key,proposal[1],self._expression,now)
+                if item.mode=="preview":
+                    preview_id=item.intent_id
+                    decision=arbitrate_activity(selector,arbiter,state,active,await self._recoverable_ids(core,active),**arguments)
+                else:expression=item
             selected = None
             winner = decision.winner
             if winner.kind == BehaviorKind.START_ACTIVITY:
@@ -634,6 +852,8 @@ class PersonaStore:
                 selected = next(r for r in active if r.instance.activity_id == winner.activity_id)
             # 保留旧 reason/scores 字段语义；完整解释保存在 arbitration 中。
             reason = "busy" if active else "no_candidate"
+            if winner.kind==BehaviorKind.EXPRESS:
+                reason="expression_selected"
             if winner.kind == BehaviorKind.START_ACTIVITY:
                 reason = "resume_pending" if winner.activity_id is not None else "selected"
             scores = {} if active else {
@@ -651,6 +871,8 @@ class PersonaStore:
                              if selected is not None and winner.kind == BehaviorKind.START_ACTIVITY else None),
                 payload={
                     "agent_id": agent_id, "decision_key": decision_key,
+                    "expression_id":None if expression is None else expression.intent_id,
+                    "expression_preview_id":preview_id,
                     "state_version": state.version, "reason": reason, "scores": scores,
                     "policy": selector.policy.model_dump(mode="json"),
                     "arbitration_policy": arbiter.policy.model_dump(mode="json"),
@@ -661,7 +883,7 @@ class PersonaStore:
                     "emotion_scored_at": now.isoformat(timespec="microseconds"),
                 },
             ))
-            return BehaviorReservation(decision=decision, activity=selected)
+            return BehaviorReservation(decision=decision, activity=selected,expression=expression)
 
     async def get_activity(self, agent_id: str, activity_id: str) -> ActivityRecord | None:
         async with self._repositories() as (_, activities):

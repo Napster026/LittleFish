@@ -10,6 +10,7 @@ class BehaviorKind(str, Enum):
     START_ACTIVITY = "start_activity"
     CONTINUE_ACTIVITY = "continue_activity"
     IDLE = "idle"
+    EXPRESS = "proactive_expression"
 
 
 class ArbitrationPolicy(BaseModel):
@@ -37,6 +38,8 @@ class ActiveBehavior(BaseModel):
 
 class ArbitrationContext(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
+    conversation_reason: Literal["reply_pending", "waiting_followup"] | None = None
+    expression_pending: StrictBool = False
     active: tuple[ActiveBehavior, ...] = ()
     recoverable_activity_ids: frozenset[StrictStr] = frozenset()
 
@@ -83,6 +86,7 @@ class BehaviorCandidate(BaseModel):
     definition_id: StrictStr | None = None
     activity_id: StrictStr | None = None
     mode: StrictStr | None = None
+    target_scope_id: StrictStr | None = Field(default=None,min_length=1)
     unavailable_reason: StrictStr | None = None
     score_breakdown: UtilityBreakdown | None = None
 
@@ -97,6 +101,12 @@ class BehaviorCandidate(BaseModel):
     def validate_target(self):
         if self.score_breakdown is not None and self.utility != self.score_breakdown.final_score:
             raise ValueError("候选效用必须等于评分分项的最终分")
+        if self.kind == BehaviorKind.EXPRESS:
+            if not self.target_scope_id or any(v is not None for v in (self.definition_id,self.activity_id,self.mode)):
+                raise ValueError("主动表达只绑定目标会话")
+            return self
+        if self.target_scope_id is not None:
+            raise ValueError("只有主动表达候选可绑定目标会话")
         if self.kind == BehaviorKind.IDLE:
             if any(v is not None for v in (self.definition_id, self.activity_id, self.mode)):
                 raise ValueError("空闲候选不能绑定活动")
@@ -119,10 +129,11 @@ class BehaviorDecision(BaseModel):
     winner: BehaviorCandidate
     reason: StrictStr
     assessments: tuple[CandidateAssessment, ...] = ()
+    conversation_reason: Literal["reply_pending", "waiting_followup"] | None = None
 
 
 class BehaviorArbiter:
-    """当前只仲裁开始、继续和空闲；运行活动不抢占，暂停不恢复。
+    """仲裁活动开始、继续、主动表达和空闲；运行活动不抢占，暂停不恢复。
 
     输入为应用层生成的开始候选；继续与空闲由内核构建。接续已持久化
     的 pending 不重新比较需求分数，但仍遵守禁用、模式和占用约束。
@@ -134,6 +145,11 @@ class BehaviorArbiter:
     def _reject(self, candidate: BehaviorCandidate, context: ArbitrationContext) -> str | None:
         if not self.policy.autonomous_enabled:
             return "autonomy_disabled"
+        if candidate.kind==BehaviorKind.EXPRESS:
+            if context.active:return "activity_occupied"
+            if context.conversation_reason:return context.conversation_reason
+            if context.expression_pending:return "expression_pending"
+            return candidate.unavailable_reason or ("nonpositive_utility" if candidate.utility<=0 else None)
         if candidate.definition_id in self.policy.disabled_definition_ids:
             return "activity_disabled"
         if candidate.mode != "simulated":
@@ -148,6 +164,10 @@ class BehaviorArbiter:
                 return "target_mismatch"
         elif context.active:
             return "activity_occupied"
+        if context.conversation_reason is not None:
+            return context.conversation_reason
+        if context.expression_pending:
+            return "expression_pending"
         if candidate.unavailable_reason is not None:
             return candidate.unavailable_reason
         if candidate.activity_id is None and candidate.utility <= 0:
@@ -159,8 +179,8 @@ class BehaviorArbiter:
     ) -> BehaviorDecision:
         context = ArbitrationContext.model_validate(context.model_dump())
         copies = tuple(BehaviorCandidate.model_validate(c.model_dump()) for c in candidates)
-        if any(c.kind != BehaviorKind.START_ACTIVITY for c in copies):
-            raise ValueError("候选来源只提供开始行为；继续和空闲由仲裁器构建")
+        if any(c.kind not in (BehaviorKind.START_ACTIVITY,BehaviorKind.EXPRESS) for c in copies):
+            raise ValueError("候选来源只提供开始或主动表达；继续和空闲由仲裁器构建")
         if len({c.candidate_id for c in copies}) != len(copies):
             raise ValueError("候选 ID 不能重复")
         if any(c.candidate_id == "idle" or c.candidate_id.startswith("continue:") for c in copies):
@@ -186,7 +206,8 @@ class BehaviorArbiter:
             reason = "continue_running"
         elif allowed:
             winner = sorted(allowed, key=lambda c: (-c.utility, c.candidate_id))[0]
-            reason = "recover_pending" if winner.activity_id is not None else "start_activity"
+            reason = ("proactive_expression" if winner.kind==BehaviorKind.EXPRESS else
+                      "recover_pending" if winner.activity_id is not None else "start_activity")
         else:
             winner = idle
             if len(context.active) > 1:
@@ -194,5 +215,10 @@ class BehaviorArbiter:
             elif context.active:
                 reason = "paused" if context.active[0].status == "paused" else "pending_blocked"
             else:
-                reason = "no_candidate" if self.policy.autonomous_enabled else "autonomy_disabled"
-        return BehaviorDecision(winner=winner, reason=reason, assessments=tuple(assessments))
+                reason = ("autonomy_disabled" if not self.policy.autonomous_enabled else
+                          context.conversation_reason or ("expression_pending" if context.expression_pending else "no_candidate"))
+            if (reason == "pending_blocked" and self.policy.autonomous_enabled and context.conversation_reason
+                    and any(a.reason==context.conversation_reason for a in assessments)):
+                reason = context.conversation_reason
+        return BehaviorDecision(winner=winner, reason=reason, assessments=tuple(assessments),
+                                conversation_reason=context.conversation_reason)
