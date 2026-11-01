@@ -23,3 +23,7 @@ logs/
 dist/
 # 手动运行测试时把 TMP 指到工作区内产生的临时目录。
 .dsh-tmp/
+
+# 变更记录与打包清单只保留在本地，不进版本库。
+CHANGES_*.md
+PACKAGING_FILES_*.txt
