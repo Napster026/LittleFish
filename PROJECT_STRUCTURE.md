@@ -1,8 +1,10 @@
-# 项目结构复核（v0.7.0）
+# 项目结构说明（当前 v0.9.1，含历史增量）
 
 当前保留的目录都有实际运行职责。v0.4.0 清理过 20 个只有说明文字的 Python 占位文件和 3 个空 YAML；v0.5.0 按实际需求建立了会话记忆模块。完整语义记忆、巩固、关系和主动社交继续保留在路线图中。
 
-## 当前目录
+## 历史目录快照（v0.7 阶段）
+
+下方树保留当时结构；新增会话、主动表达及期限模块见本文末尾版本增量。当前全量文件以 [v0.9.1 打包清单](PACKAGING_FILES_v0.9.1.txt) 为准。
 
 ```text
 persona_agent/                         # 仓库根目录
@@ -120,3 +122,45 @@ v0.4.0 删除前检查了内容及 Python 引用。历史版本笔记保留历�
 ## 后续结构调整建议
 
 先验证本版“明确陈述 → 近期归并 → 类型/日期/关键词召回 → 删除”的闭环，再考虑自由语义提取、语义检索和记忆巩固。基础关系已在 social 按实际职责建立；话题、承诺、反思、主动表达和真实视频/游戏执行器仍按实际输入输出建立模块。当前较大的 `application/persistence.py` 保留事务门面，具体记忆规则已在 `memory/persistence.py`，本轮没有改变历史事件身份或将 SQL 引入业务层。
+
+
+## v0.8.0 会话状态增量
+
+- `social/conversation.py`：独立的续聊配置、状态和纯判断。只保存身份、阶段、时间和计数，没有聊天正文。
+- `social/conversation_persistence.py`：事务内按角色/会话精确读写；同会话单一当前对象，旧回调不能覆盖新入站。
+- `application/host.py` / `application/persistence.py`：复用现有操作锁与事务，协调状态读写和诊断。
+- `main.py`：绑定范围内接收、排除其他收件人/指令，受控放行当前消息的默认回复链；发送阶段钩子记录有限证据。
+- `infrastructure/storage.py`：schema v7→v8 增加第十五张表 `conversations`，不解释业务 JSON。
+
+会话状态不属于 needs、VAD 或关系倾向；也不复制 AstrBot 聊天历史。当前没有新模型服务、向量库或独立发消息执行器。仍由 AstrBot 执行回复，后续真正需要主动发起聊天时再接入行为仲裁。
+
+
+## v0.8.1 会话仲裁增量
+
+- `core/arbiter.py` 只接收 `reply_pending` / `waiting_followup` 原因，不依赖 QQ、social、PersonaHost 或会话正文；限制开始和接续 pending，不抢占 running。
+- `social/conversation.py` 从会话时间/阶段/剩余续聊次数投影占用，`social/conversation_clock.py` 构造带会话修订号的单次到期计划。
+- `application/conversation.py` 适配宿主当前 QQ 绑定范围；`application/persistence.py` 在预留活动的同一事务内汇总占用，分页只读每会话一条游标。
+- `application/host.py` 在会话变更、截止投递和启动恢复时协调检查与仲裁，复用既有操作锁和调度器。没有新增发送执行器、模型判别器或状态结算器。
+
+
+## v0.9.0 主动表达增量
+
+- `social/expression.py`：目标、配置、意图与预算状态及安静时段/冷却规则；不依赖 AstrBot 或网络。
+- `application/expression.py`：按角色精确读取一条表达游标，选择近期实际私聊目标、原子预留预算并写状态审计。
+- `core/arbiter.py`：新增纯 `proactive_expression` 候选，比较效用并遵守活动和会话占用；核心不读取人格或平台。
+- `application/host.py` / `application/persistence.py`：后台生成与发送协调，发送前复核，重启不确定状态收敛，正常入站取消旧意图。
+- `application/astrbot_expression.py`：AstrBot v4.29.3 SDK 边界，读取目标现有对话与最终人设，调用一次聊天模型并主动发送纯文本。
+- `social/conversation.py` 的可选出站引用及 `cognition/prompt_builder.py` 的有界只读展示：让角色知道自己刚才主动说过什么，不复制或覆盖 AstrBot 历史。
+
+schema v9 新增第十六张表 `expression_heads`；每角色仅一条当前预算/意图，历史阶段写既有事件表，无事件扫描。尚未新增真实游戏/视频执行器或低频人格反思。
+
+
+## v0.9.1 表达控制与期限增量
+
+- `social/expression_clock.py`：以角色、意图 ID、会话和期限定义规范单次计划；不用会随阶段改变的预算游标修订号作为期限身份。
+- `application/expression.py`：实际发送意图与期限任务同事务预留，预览不排队。
+- `application/persistence.py`：取消、旧 pending 补计划、严格期限验证、幂等过期收敛；仲裁失败可沿原到期键恢复。
+- `application/host.py`：取消生成任务不等待其在操作锁内退出；发送在途不宣称撤回，旧任务退出后接续新预留意图。暂停/恢复与配置持久化、跨日诊断、分级超时。
+- `main.py`：绑定管理员私聊的 show/cancel/pause/resume 入口及配置保存回滚。
+
+数据库保持 schema v9 / 十六张表，仍使用既有调度器、操作锁和状态机，无新模型调用或独立外发服务。
