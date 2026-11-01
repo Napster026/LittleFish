@@ -1,6 +1,62 @@
 # 手动验证
 
-测试由开发者在项目根目录运行。自主活动选择、最小行为仲裁与情绪引擎已由开发者测试通过；情绪偏好评分也已通过；用户已验证 QQ 私聊基础链路；v0.2.1 全量测试已由用户确认通过；v0.3.0 全量测试已由用户确认通过；本轮 v0.5.3 修订尚待用户验证。以功能行为和真实缺陷作为验收依据，不以测试数量衡量进度。
+测试由开发者在项目根目录运行。自主活动选择、最小行为仲裁与情绪引擎已由开发者测试通过；情绪偏好评分也已通过；用户已验证 QQ 私聊基础链路；v0.2.1 全量测试已由用户确认通过；v0.3.0 全量测试已由用户确认通过；v0.5.3 全量测试已由用户确认通过；v0.6.2 测试已由用户确认通过；本轮 v0.7.1 尚待用户验证。以功能行为和真实缺陷作为验收依据，不以测试数量衡量进度。
+
+本轮 v0.7.1 仅做静态检查，未运行测试、实际数据库或 QQ：
+
+```powershell
+python -m unittest discover -s tests -p "test_relationship*.py" -v
+python -m unittest discover -s tests -p "test_astrbot_host.py" -v
+python -m unittest discover -s tests -v
+```
+
+新增每日倾向回归：负值公式与零钳制、0..0.5 保留、正向超额减半、多日折叠、日期游标、04/06 点边界、03:30 新消息/新档案不提前结算、旧午夜事件迁移到新时段、重启和重复投递、离线只记一条数值维护、先回归后互动、独立额度/熟悉度/最近互动、下一计划失败原子回滚、异常行隔离及跨平台分页。历史读取允许当前用户的全局数字日回归，但其他会话的聊天回执继续隔离。详见 [CHANGES_v0.7.1.md](../CHANGES_v0.7.1.md)。
+
+本轮 v0.7.0 仅做静态检查，未运行测试、实际数据库或 QQ：
+
+```powershell
+python -m unittest discover -s tests -p "test_relationships.py" -v
+python -m unittest discover -s tests -p "test_relationship_context.py" -v
+python -m unittest discover -s tests -p "test_astrbot_host.py" -v
+python -m unittest discover -s tests -v
+```
+
+新增验证：既有聊天规则映射、身份/平台/角色隔离、独立冷却、正负合计日上限、本地预算日、重复/重启/历史不补算、默认私聊与群聊明确指向、无效/过期/旧消息、关系不增加需求或情绪结算、写入失败全回滚、索引历史无正文；当前身份只读注入、切换用户、开关/范围门禁、提示裁剪、管理员命令；v6→v7 无损迁移及失败回滚/重试。旧结构夹具先移除 v7 关系表，所有成功升级断言更新到 v7，未知版本测试改为 v8。见 [CHANGES_v0.7.0.md](../CHANGES_v0.7.0.md)。
+
+本轮 v0.6.2 仅做静态检查，未运行测试、实际数据库或 QQ：
+
+```powershell
+python -m unittest discover -s tests -p "test_activity_recall.py" -v
+python -m unittest discover -s tests -p "test_activity_memory.py" -v
+python -m unittest discover -s tests -p "test_memory.py" -v
+python -m unittest discover -s tests -v
+```
+
+新增验证：同活动阶段在截断前分组，不同活动及角色/范围/来源/定义边界保留；代表选择优先回答查询，有内容总结与最小完成事实区别处理；详细过程最多两条，代表保留原评分位置；15 个 checkpoint 不阻断其他活动的有界补取，近期/词项/空查询都覆盖；会话和 self 共用八页额外预算，游标推进、达到目标立即停止、不跨范围、不写入或重发效果。现有计划展示回归仍需通过。详见 [CHANGES_v0.6.2.md](../CHANGES_v0.6.2.md)。
+
+本轮 v0.6.1 仅做静态检查，未运行测试、实际数据库或 QQ：
+
+```powershell
+python -m unittest discover -s tests -p "test_activity_memory.py" -v
+python -m unittest discover -s tests -p "test_memory.py" -v
+python -m unittest discover -s tests -p "test_chat_context.py" -v
+python -m unittest discover -s tests -v
+```
+
+新增验证：自主休息/进食/玩最小事实可召回并标注角色自身与模拟来源，跨会话及重启不复制数据、不重发效果；未知摘要、会话私有内容、其他角色与不符合结构的 self 不共享；关键词和近期上下文均可命中，开关、字符预算、两路有界检索和无历史事件扫描保持有效。v0.6.0 的 tick 耗尽测试已修正为沿用规范计划的真实重试次数。详见 [CHANGES_v0.6.1.md](../CHANGES_v0.6.1.md)。
+
+本轮 v0.6.0 仅做静态检查，未运行测试、实际数据库或 QQ：
+
+```powershell
+python -m unittest discover -s tests -p "test_activity_memory.py" -v
+python -m unittest discover -s tests -p "test_memory.py" -v
+python -m unittest discover -s tests -p "test_chat_context.py" -v
+python -m unittest discover -s tests -v
+```
+
+新增活动经历闭环：阶段与整项的身份、同 checkpoint 重放/冲突、不同 checkpoint 不误合并、原会话召回及内部 self 隔离、群聊开关、无内容进度不入库、完成/失败的最小事实、重启幂等、原子回滚、规则和延后评价只结算一次、迟到结果不改记忆、历史事件不回填、旧草稿回执与 JSON 兼容、长摘要存储/提示预算、同源反馈去重及裁剪兜底。测试不访问模型。原聊天反馈用例允许从短期反馈或同源记忆引用来源，但不允许重复注入。见 [CHANGES_v0.6.0.md](../CHANGES_v0.6.0.md)。
+
+以下为历史版本验证说明。
 
 本轮 v0.5.3 仅做静态检查，测试由用户执行：
 
@@ -12,8 +68,6 @@ python -m unittest discover -s tests -v
 ```
 
 新增验证：单条坏 JSON 不阻断正常行或 host.ready，修复失败/修订冲突按单行回滚，501 条全坏批次仍推进游标，待修复行不参与消息归并与上下文，状态/按 scope 的 pending 和坏行删除可用，日志不含正文，全局连接/保存点错误不被降级误吞。SQLite 与内存适配器保持局部回滚契约。详见 [CHANGES_v0.5.3.md](../CHANGES_v0.5.3.md)。没有执行测试或生成 ZIP，数据库仍为 v6。
-
-以下为历史版本验证说明。
 
 本轮 v0.5.2 仅做静态检查，测试由用户执行：
 

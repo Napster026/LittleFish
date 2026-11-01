@@ -100,7 +100,8 @@ class PersonaPlugin(Star):
             if not self._chat_context_allowed(event) or event.get_extra("handlers_parsed_params", {}):
                 return
             context = await self.host.chat_context(event.unified_msg_origin,query=event.get_message_str(),
-                speaker_id=f"{event.get_platform_id()}:user:{event.get_sender_id()}",is_private=not bool(event.get_group_id()))
+                speaker_id=f"{event.get_platform_id()}:user:{event.get_sender_id()}",is_private=not bool(event.get_group_id()),
+                platform_id=event.get_platform_id(),user_id=event.get_sender_id())
             if context is not None:
                 apply_prompt_context(req, context)
                 self.host.remember_context(context)
@@ -133,8 +134,13 @@ class PersonaPlugin(Star):
                     context = self.host.last_context(event.unified_msg_origin)
                     return "暂无本次加载实际注入的上下文" if context is None else context.preview()
                 context = await self.host.chat_context(event.unified_msg_origin,
-                    speaker_id=f"{event.get_platform_id()}:user:{event.get_sender_id()}",is_private=not bool(event.get_group_id()))
+                    speaker_id=f"{event.get_platform_id()}:user:{event.get_sender_id()}",is_private=not bool(event.get_group_id()),
+                    platform_id=event.get_platform_id(),user_id=event.get_sender_id())
                 return "当前上下文预览（不调用模型）：\n"+context.preview()
+            if operation == "relationship":
+                if not self._capture_allowed(event):
+                    return "本会话未绑定，不能查询关系档案"
+                return await self.host.relationship_command(adapt_qq_message(event),argument or "show")
             if operation == "memory":
                 if not self._capture_allowed(event):
                     return "本会话未绑定，不能操作记忆"
@@ -158,6 +164,7 @@ class PersonaPlugin(Star):
                 "/persona_feedback [活动实例ID]：查看阶段内容",
                 "/persona_context [now|last]：预览当前或最近实际注入的上下文",
                 "/persona_memory add|list|pending|show|history|delete|search：管理当前会话记忆",
+                "/persona_relationship [show|history]：查看当前用户的关系估计与本会话变化",
             ))
         except (ValueError, RuntimeError) as exc:
             self.logger.exception("Persona 管理操作失败")
@@ -246,4 +253,10 @@ class PersonaPlugin(Star):
         action="list" if match is None or match.group(1) is None else match.group(1)
         value="" if match is None or match.group(2) is None else match.group(2).strip()
         if (text := await self._command(event,"memory",action,value)) is not None:
+            yield event.plain_result(text)
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("persona_relationship")
+    async def persona_relationship(self,event: AstrMessageEvent,action: str="show"):
+        if (text:=await self._command(event,"relationship",action)) is not None:
             yield event.plain_result(text)

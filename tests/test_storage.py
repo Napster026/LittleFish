@@ -231,10 +231,10 @@ class CorePersistenceTests(unittest.IsolatedAsyncioTestCase):
         await self.storage.create_state(self.state)
         await self.storage.close()
         with closing(sqlite3.connect(self.path)) as connection:
-            connection.execute("PRAGMA user_version = 7")
+            connection.execute("PRAGMA user_version = 8")
             connection.commit()
         with self.assertRaises(UnsupportedSchemaError):
             await self.storage.open()
         with closing(sqlite3.connect(self.path)) as connection:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 7)
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 8)
             self.assertEqual(connection.execute("SELECT version FROM agent_states").fetchone()[0], 0)

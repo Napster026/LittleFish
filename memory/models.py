@@ -10,6 +10,7 @@ class MemorySettings(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     enabled: StrictBool = True
     auto_capture: StrictBool = True
+    activity_memories_enabled: StrictBool = True
     private_only: StrictBool = True
     merge_window_seconds: Annotated[int, Field(strict=True, ge=0, le=604800)] = 3600
     candidate_limit: Annotated[int, Field(strict=True, ge=1, le=100)] = 20
@@ -34,6 +35,29 @@ class MemoryIndexRepairReport(BaseModel):
     sample_ids: tuple[StrictStr, ...] = Field(default=(), max_length=5)
 
 
+class ActivityMemoryContext(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    activity_id: StrictStr
+    definition_id: StrictStr
+    name: StrictStr = Field(min_length=1,max_length=80)
+    checkpoint_id: StrictStr | None = Field(default=None,min_length=1,max_length=200)
+    phase: Literal["stage", "completed", "failed"]
+    task: Literal["success", "partial", "failure", "neutral"]
+
+    @field_validator("activity_id","definition_id","name","checkpoint_id")
+    @classmethod
+    def text_fields(cls,value):
+        if value is not None and (not value.strip() or value!=value.strip()):
+            raise ValueError("活动经历标识和名称不能留空或含首尾空白")
+        return value
+
+    @model_validator(mode="after")
+    def stage_identity(self):
+        if self.phase=="stage" and self.checkpoint_id is None:
+            raise ValueError("阶段经历必须包含 checkpoint")
+        return self
+
+
 class MemoryDraft(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
     kind: Literal["episodic", "story"] = "episodic"
@@ -49,7 +73,7 @@ class MemoryDraft(BaseModel):
     target_end_at: AwareDatetime | None = None
     time_precision: Literal["unknown", "day", "range", "instant"] = "unknown"
     plan_status: Literal["planned", "cancelled", "completed"] | None = None
-    text: StrictStr = Field(min_length=1, max_length=1000)
+    text: StrictStr = Field(min_length=1, max_length=2000)
     keywords: tuple[StrictStr, ...] = Field(default=(), max_length=4)
     source_event_id: StrictStr
     provenance: EventProvenance
@@ -58,6 +82,7 @@ class MemoryDraft(BaseModel):
     topic_key: StrictStr = ""
     detail_key: StrictStr = ""
     update_hint: Literal["assert", "correct", "cancel", "complete"] = "assert"
+    activity: ActivityMemoryContext | None = None
 
     @field_validator("occurred_at", "valid_from", "valid_until", "target_start_at", "target_end_at", mode="before")
     @classmethod
@@ -98,6 +123,10 @@ class MemoryDraft(BaseModel):
     def consistency(self):
         if self.visibility == "scope" and self.scope_id is None:
             raise ValueError("会话记忆必须包含 scope_id")
+        if self.visibility == "self" and self.scope_id is not None:
+            raise ValueError("内部经历不能带公开会话范围")
+        if self.activity is not None and self.claim_type!="event":
+            raise ValueError("活动经历必须使用 event 类型")
         if self.valid_from is not None and self.valid_until is not None and self.valid_from >= self.valid_until:
             raise ValueError("记忆有效区间必须递增")
         if (self.target_start_at is None) != (self.target_end_at is None):

@@ -36,6 +36,10 @@ from .evaluation import evaluate_chat_event, chat_cooldown_key, evaluate_activit
 from .evaluation_persistence import EvaluationPersistence
 from .qq import build_message_time_adjustment
 from .chat_context import read_chat_snapshot, record_feedback_head
+from .activity_memory import record_activity_memory
+from .relationship import relationship_signal
+from ..social.persistence import RelationshipPersistence
+from ..social.clock import relationship_day_plans, parse_relationship_day, build_relationship_day
 from ..memory.persistence import MemoryPersistence
 from ..memory.models import MemoryIndexRepairReport
 from .appraisal_persistence import AppraisalPersistence, DUE_EVENT_TYPE
@@ -51,10 +55,11 @@ class PersonaStore:
     注入 UnitOfWork 实现；业务消费者只依赖各自的最小存储协议。
     """
 
-    def __init__(self, backend: UnitOfWork, *, evaluation: EvaluationSettings | None = None, memory=None):
+    def __init__(self, backend: UnitOfWork, *, evaluation: EvaluationSettings | None = None, memory=None, relationships=None):
         self._backend = backend
         self._evaluation = evaluation
         self._memory = memory
+        self._relationships = relationships
         self.memory_index_report = MemoryIndexRepairReport()
 
     async def __aenter__(self) -> PersonaStore:
@@ -121,16 +126,64 @@ class PersonaStore:
                 await MemoryPersistence(core).observe(agent_id,event,self._memory,allow_capture=not was_recorded)
             settings = self._evaluation or EvaluationSettings(enabled=False)
             result = evaluate_chat_event(event, settings, agent_id=agent_id, directed=directed)
-            return await EvaluationPersistence(core, self._commit_emotion).evaluate_once(
+            receipt=await EvaluationPersistence(core, self._commit_emotion).evaluate_once(
                 agent_id, event, settings, result, now=now, cooldown_key=chat_cooldown_key(event, result),
             )
+            if self._relationships is not None:
+                await RelationshipPersistence(core).observe(agent_id,event,relationship_signal(result,self._relationships),
+                    self._relationships,now=now,directed=directed,allow_capture=not was_recorded)
+            return receipt
 
     async def chat_snapshot(self, agent_id: str, scope_id: str, *, now, rates, labels, include_feedback=True,
-                            query="", speaker_id=None, include_memories=True):
+                            query="", speaker_id=None, include_memories=True, platform_id=None, user_id=None, include_relationship=True):
         async with self._repositories() as (core, activities):
             return await read_chat_snapshot(core, activities, agent_id, scope_id, now=now,
                 rates=rates, labels=labels, include_feedback=include_feedback,
-                memory_settings=self._memory, query=query, speaker_id=speaker_id, include_memories=include_memories)
+                memory_settings=self._memory, query=query, speaker_id=speaker_id, include_memories=include_memories,
+                relationship_settings=self._relationships,platform_id=platform_id,user_id=user_id,include_relationship=include_relationship)
+
+    async def start_relationship_clock(self,agent_id,*,now):
+        now=normalize_schedule_time(now)
+        settings=self._relationships
+        if settings is None or not settings.enabled or not settings.affinity_regression_enabled:
+            return None
+        today,tomorrow=relationship_day_plans(agent_id,now,settings)
+        async with self._repositories() as (core,_):
+            if await core.get_state(agent_id) is None:
+                raise StateNotFoundError("角色不存在")
+            await core.record_event(today.event)
+            report=await RelationshipPersistence(core).regress_all(agent_id,settings,now=now,cause=today.event)
+            await core.create_schedule(tomorrow)
+            return report
+
+    async def handle_relationship_day(self,agent_id,event,*,now):
+        now=normalize_schedule_time(now)
+        spec=parse_relationship_day(event)
+        if spec.agent_id!=agent_id or event.timestamp>now:
+            raise ValueError("关系日时钟不属于当前角色或尚未到期")
+        settings=self._relationships
+        if settings is None:
+            raise ValueError("尚未配置关系规则")
+        async with self._repositories() as (core,_):
+            plan=await core.get_schedule(agent_id,event.event_id)
+            if plan is None or plan.schedule!=build_relationship_day(agent_id,spec.day,spec.utc_offset_minutes,spec.settlement_hour):
+                raise ValueError("关系日时钟缺少匹配的持久化计划")
+            await core.record_event(event)
+            report=await RelationshipPersistence(core).regress_all(agent_id,settings,now=now,cause=event)
+            if settings.enabled and settings.affinity_regression_enabled:
+                _,tomorrow=relationship_day_plans(agent_id,now,settings)
+                await core.create_schedule(tomorrow)
+            return report
+
+    async def get_relationship(self,agent_id,platform_id,user_id):
+        async with self._repositories() as (core,_):
+            return await RelationshipPersistence(core).get(agent_id,platform_id,user_id)
+
+    async def relationship_view(self,agent_id,platform_id,user_id,scope_id,*,history=False):
+        async with self._repositories() as (core,_):
+            repository=RelationshipPersistence(core)
+            return (await repository.get(agent_id,platform_id,user_id),
+                    await repository.history(agent_id,platform_id,user_id,scope_id,limit=10 if history else 1))
 
     async def memory_operation(self, agent_id, event, action, value, settings, *, platform_timestamp=None, now):
         now=normalize_schedule_time(now)
@@ -163,6 +216,11 @@ class PersonaStore:
         async with self._repositories() as (core, _):
             await core.record_event(event)
             return await MemoryPersistence(core).write_draft(agent_id,event,draft,settings)
+
+    async def list_internal_memories(self, agent_id, *, limit=10, before_id=None):
+        """仅供本地维护；QQ 命令和聊天快照不调用此入口。"""
+        async with self._repositories() as (core, _):
+            return await MemoryPersistence(core).list_internal(agent_id,limit=limit,before_id=before_id)
 
     async def latest_evaluation(self, agent_id: str):
         async with self._repositories() as (core, _):
@@ -202,7 +260,7 @@ class PersonaStore:
                         await evaluator.due(plan.schedule.event, now=now)
                 after = rows[-1]["schedule_id"]
 
-    async def _evaluate_activity_events(self, core, record, events, *, now):
+    async def _evaluate_activity_events(self, core, record, events, *, now, new_event_ids=()):
         settings = self._evaluation
         evaluator = EvaluationPersistence(core, self._commit_emotion)
         reservations = AppraisalPersistence(core, self._commit_emotion, settings)
@@ -212,6 +270,8 @@ class PersonaStore:
             feedback = parse_activity_feedback(record, event)
             if feedback is not None:
                 await record_feedback_head(core, event)
+            if self._memory is not None:
+                await record_activity_memory(core,record,event,self._memory,is_new=event.event_id in new_event_ids)
             if settings is None:
                 continue
             fallback = evaluate_activity_event(record, event, settings, use_experience=False)
@@ -259,7 +319,7 @@ class PersonaStore:
             if record.instance.status not in (ActivityStatus.RUNNING, ActivityStatus.PAUSED) or event.timestamp > now:
                 raise ValueError("新阶段反馈要求活动仍在运行或暂停，且反馈不来自未来")
             await core.record_event(event)
-            await self._evaluate_activity_events(core, record, (event,), now=now)
+            await self._evaluate_activity_events(core, record, (event,), now=now,new_event_ids={event.event_id})
             return event
 
     async def latest_activity_feedback(self, agent_id: str, activity_id: str | None = None) -> AgentEvent | None:
@@ -470,7 +530,8 @@ class PersonaStore:
                     current = await activities.get_activity(agent_id, activity_id)
                     if current.instance.revision != previous.instance.revision:
                         events = await activities.get_committed_events(current)
-                        await self._evaluate_activity_events(core, current, events, now=attempted_at)
+                        await self._evaluate_activity_events(core, current, events, now=attempted_at,
+                            new_event_ids={event.event_id for event in events})
             return saved
 
     async def create_activity(self, definition: ActivityDefinition, instance: ActivityInstance) -> ActivityRecord:
@@ -635,13 +696,19 @@ class PersonaStore:
         trigger_event: AgentEvent | None = None,
     ) -> ActivityRecord:
         async with self._repositories() as (core, activities):
+            # 必须在提交前判断；升级/重载后重投旧终态事件不回填新记忆。
+            new_event_ids=set()
+            if self._memory is not None:
+                for event in result.events:
+                    if event.event_type in (STAGE_EVENT_TYPE,"ACTIVITY.completed","ACTIVITY.failed") and await core.get_event(event.event_id) is None:
+                        new_event_ids.add(event.event_id)
             saved = await activities.commit_activity_result(
                 operation, context, result, settled_at=settled_at,
                 next_schedule=next_schedule, trigger_event=trigger_event,
             )
             candidate = ActivityRecord(definition=context.definition, instance=result.instance)
             await self._evaluate_activity_events(core, candidate, result.events,
-                now=context.now if settled_at is None else settled_at)
+                now=context.now if settled_at is None else settled_at,new_event_ids=new_event_ids)
             return saved
 
     async def settle_activity_completion(self, agent_id: str, activity_id: str, *, settled_at: datetime) -> AgentState:

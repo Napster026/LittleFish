@@ -1,7 +1,16 @@
 """仅供临时测试数据库构造旧 schema；不是生产迁移或降级入口。"""
 
 
+def restore_v6_layout(connection):
+    if connection.execute("PRAGMA foreign_keys").fetchone()[0]:
+        raise ValueError("旧结构夹具必须使用独立且关闭外键的临时连接")
+    connection.execute("DROP TABLE IF EXISTS relationship_receipts")
+    connection.execute("DROP TABLE IF EXISTS relationships")
+    connection.execute("PRAGMA user_version = 6")
+
+
 def restore_v5_layout(connection):
+    restore_v6_layout(connection)
     if connection.execute("PRAGMA foreign_keys").fetchone()[0]:
         raise ValueError("旧结构夹具必须使用独立且关闭外键的临时连接")
     columns=("memory_id,agent_id,scope_id,kind,visibility,speaker_id,about_id,claim_type,provenance,"
@@ -23,6 +32,7 @@ def restore_v5_layout(connection):
 
 
 def restore_v4_layout(connection):
+    restore_v6_layout(connection)
     if connection.execute("PRAGMA foreign_keys").fetchone()[0]:
         raise ValueError("旧结构夹具必须使用独立且关闭外键的临时连接")
     for table in ("memory_terms","memory_sources","memory_revisions","memory_receipts","memories"):

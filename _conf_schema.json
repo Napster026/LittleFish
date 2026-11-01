@@ -353,6 +353,7 @@
     "default": {
       "enabled": true,
       "auto_capture": true,
+      "activity_memories_enabled": true,
       "private_only": true,
       "merge_window_seconds": 3600,
       "candidate_limit": 20,
@@ -361,6 +362,38 @@
       "utc_offset_minutes": 480,
       "recall_half_life_days": 30
     },
-    "hint": "默认仅绑定私聊：自动提取明确第一人称计划/偏好，不调用模型。归并候选优先最近 1 小时内的 20 条，时间近不单独作为覆盖依据。相对日期按来源时间和 UTC 偏移解析；保存后重载。/persona_memory 管理。 召回综合归一化相关度、重要度和时间衰减，半衰期默认 30 天；每词候选有界并批量评分。 索引异常可用 /persona_memory pending 查看当前会话待修复 ID。"
+    "hint": "默认仅绑定私聊：自动提取明确第一人称计划/偏好，不调用模型。activity_memories_enabled 保存已提交活动的阶段/完成/失败经历；有 scope_id 仅当前会话可见。无归属的角色自身模拟活动最小事实可在聊天召回，标注角色自身与 simulated；未知自由文本摘要仍内部保留。归并候选优先最近 1 小时内的 20 条，时间近不单独作为覆盖依据。相对日期按来源时间和 UTC 偏移解析；保存后重载。/persona_memory 管理。 召回综合归一化相关度、重要度和时间衰减，半衰期默认 30 天；每词候选有界并批量评分。普通召回同一活动一条，明确查询阶段/过程时最多两条；不足时所有检索流共用最多 8 页额外补取预算，达到上限可少返回。 索引异常可用 /persona_memory pending 查看当前会话待修复 ID。"
+  },
+  "relationships": {
+    "description": "基础关系档案（独立于情绪与需求）",
+    "type": "dict",
+    "default": {
+      "enabled": true,
+      "private_only": true,
+      "cooldown_seconds": 300,
+      "max_effect_age_seconds": 300,
+      "familiarity_step": 0.2,
+      "positive_affinity_step": 0.1,
+      "negative_affinity_step": 0.2,
+      "daily_familiarity_limit": 2,
+      "daily_affinity_limit": 1,
+      "utc_offset_minutes": 480,
+      "positive_rule_ids": [
+        "thanks",
+        "praise",
+        "apology",
+        "invitation",
+        "friendly_emoji"
+      ],
+      "negative_rule_ids": [
+        "insult"
+      ],
+      "affinity_regression_enabled": true,
+      "affinity_settlement_hour": 4,
+      "affinity_daily_retention": 0.5,
+      "affinity_negative_recovery": 0.1,
+      "affinity_positive_baseline": 0.5
+    },
+    "hint": "每角色/平台/用户独立保存熟悉度和互动倾向。仅实际新入站、默认私聊；群聊需显式开启且指向角色。复用既有规则 ID，不增加模型调用；评价关闭时只累积真实互动的熟悉度。冷却与预算跨会话共用，正负变化合计受每日绝对值上限约束。历史消息不补算。/persona_relationship [show|history] 仅查询当前用户，历史只限当前会话。关系只是互动估计，不代表信任或权限。保存后重载。 倾向日结默认 UTC+8 每日 04:00，可把 affinity_settlement_hour 改为 6。到点前仍属上一结算日。负倾向按 min(0,max(x*0.5,x+0.1)) 回零；正值 0..0.5 保留，高于 0.5 的超额部分每日减半。0.5 沿用当前数值刻度，不是 50。离线按经过日数折叠补算，不改变熟悉度、最近互动、聊天冷却或额度；日回归回执为同用户共享的数值维护。"
   }
 }

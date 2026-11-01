@@ -10,6 +10,14 @@ def memory_summary(record, settings, *, short=False):
     if record.target_start_at is not None:
         zone=timezone(timedelta(minutes=settings.utc_offset_minutes))
         target=f"；目标日期 {record.target_start_at.astimezone(zone).date()}；{record.plan_status}"
+    if record.activity is not None:
+        item=record.activity
+        phase={"stage":"阶段反馈","completed":"整项完成","failed":"整项失败"}[item.phase]
+        if record.visibility=="self" and record.provenance.value=="simulated":
+            target+="；角色自身模拟经历"
+        target+=f"；{phase}；{record.provenance.value}；活动 {item.activity_id}；任务 {item.task}"
+        if item.checkpoint_id is not None:
+            target+=f"；checkpoint {item.checkpoint_id}"
     return f"{record.memory_id}（修订 {record.revision}，{record.claim_type}{target}）\n{text}"
 
 

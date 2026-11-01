@@ -30,6 +30,8 @@ from ..cognition.evaluation import RuleEvaluation
 from ..activity.feedback import ActivityFeedback
 from ..cognition.prompt_builder import build_prompt_context
 from .memory import format_memory_result
+from .relationship import format_relationship
+from ..social.clock import DAY_EVENT_TYPE
 
 
 class PersonaHost:
@@ -38,7 +40,7 @@ class PersonaHost:
         self.settings = HostSettings.model_validate(settings.model_dump())
         self.data_dir = Path(data_dir)
         self.clock = clock if clock is not None else lambda: datetime.now(timezone.utc)
-        self.store = PersonaStore(SQLiteStorage(self.data_dir / "persona.sqlite3"), evaluation=self.settings.evaluation, memory=self.settings.memory)
+        self.store = PersonaStore(SQLiteStorage(self.data_dir / "persona.sqlite3"), evaluation=self.settings.evaluation, memory=self.settings.memory, relationships=self.settings.relationships)
         self.selector = self.settings.simulation.selector()
         self.policy = self.settings.arbitration()
         self._persist_controls = persist_controls
@@ -98,6 +100,7 @@ class PersonaHost:
                         else cfg.initial_emotion.dynamics.tick_interval_seconds)
                 elif cfg.initial_emotion is not None:
                     await self.store.start_emotion_clock(agent_id, now=now, initial=cfg.initial_emotion.at(now))
+                await self.store.start_relationship_clock(agent_id,now=now)
                 self.runtime = AgentRuntime(agent_id, self.store, router, clock=self.clock)
                 await self.runtime.start()
                 self.autonomy = self._autonomy(self.policy)
@@ -142,7 +145,9 @@ class PersonaHost:
 
     async def _deliver(self, event):
         async with self._operations:
-            if event.event_type == DUE_EVENT_TYPE:
+            if event.event_type==DAY_EVENT_TYPE:
+                await self.store.handle_relationship_day(self.settings.agent_id,event,now=self.clock())
+            elif event.event_type == DUE_EVENT_TYPE:
                 receipt = await self.store.handle_appraisal_deadline(self.settings.agent_id, event, now=self.clock())
                 await self._consider_appraisal(receipt)
             else:
@@ -203,7 +208,7 @@ class PersonaHost:
                 await self._consider_appraisal(receipt)
             return event
 
-    async def chat_context(self, scope_id, *, query="", speaker_id=None, is_private=True):
+    async def chat_context(self, scope_id, *, query="", speaker_id=None, is_private=True, platform_id=None, user_id=None):
         async with self._operations:
             self._check()
             cfg = self.settings.chat_context
@@ -213,8 +218,26 @@ class PersonaHost:
                 rates=self.settings.simulation.need_rates,
                 labels={item.definition_id: item.name for item in self.settings.simulation.activities},
                 include_feedback=cfg.include_feedback,query=query,speaker_id=speaker_id,
-                include_memories=self.settings.memory.enabled and (not self.settings.memory.private_only or is_private))
+                include_memories=self.settings.memory.enabled and (not self.settings.memory.private_only or is_private),
+                platform_id=platform_id,user_id=user_id,
+                include_relationship=self.settings.relationships.enabled and (not self.settings.relationships.private_only or is_private))
             return build_prompt_context(snapshot, cfg, max_memory_chars=self.settings.memory.max_context_chars)
+
+    async def relationship_command(self,event,action="show"):
+        async with self._operations:
+            self._check()
+            cfg=self.settings.relationships
+            if not cfg.enabled:
+                return "关系功能已关闭"
+            if event.event_type!="SOCIAL.message_received" or event.provenance.value!="observed" or event.scope_id is None:
+                raise ValueError("关系查询需要当前 QQ 入站身份")
+            if cfg.private_only and (event.payload.get("group_id") or ":GroupMessage:" in event.scope_id):
+                return "当前关系功能仅在绑定私聊中使用"
+            if action not in ("show","history"):
+                return "用法：/persona_relationship [show|history]（仅当前用户）"
+            profile,changes=await self.store.relationship_view(self.settings.agent_id,event.payload.get("platform_id"),
+                event.payload.get("sender_id"),event.scope_id,history=action=="history")
+            return format_relationship(profile,changes,cfg,history=action=="history")
 
     async def memory_command(self, event, action, value=""):
         async with self._operations:

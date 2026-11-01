@@ -3,7 +3,8 @@
 from datetime import timedelta, timezone
 from ..activity.feedback import parse_activity_feedback
 from ..memory.persistence import MemoryPersistence
-from ..cognition.prompt_builder import ChatSnapshot, ContextActivity, ContextFeedback, ContextMemory
+from ..social.persistence import RelationshipPersistence
+from ..cognition.prompt_builder import ChatSnapshot, ContextActivity, ContextFeedback, ContextMemory, ContextActivityMemory, ContextRelationship
 from ..core.scheduler import normalize_schedule_time
 from ..persistence.errors import StorageError, StateNotFoundError
 from ..persona.emotion import EmotionEngine
@@ -29,7 +30,8 @@ async def record_feedback_head(core, event):
 
 
 async def read_chat_snapshot(core, activities, agent_id, scope_id, *, now, rates, labels, include_feedback,
-                             memory_settings=None, query="", speaker_id=None, include_memories=True):
+                             memory_settings=None, query="", speaker_id=None, include_memories=True,
+                             relationship_settings=None,platform_id=None,user_id=None,include_relationship=True):
     now = normalize_schedule_time(now)
     state = await core.get_state(agent_id)
     if state is None:
@@ -66,7 +68,9 @@ async def read_chat_snapshot(core, activities, agent_id, scope_id, *, now, rates
             if item is None:
                 raise StorageError("反馈指针未引用内容反馈")
             feedback = ContextFeedback(scope_id=scope_id, source_event_id=event.event_id, summary=item.summary,
-                                       provenance=event.provenance.value, occurred_at=event.timestamp)
+                                       provenance=event.provenance.value, occurred_at=event.timestamp,
+                                       activity_id=event.activity_id,
+                                       phase={"ACTIVITY.stage_completed":"stage","ACTIVITY.completed":"completed","ACTIVITY.failed":"failed"}[event.event_type])
     memories=()
     if memory_settings is not None and include_memories and memory_settings.enabled:
         found=await MemoryPersistence(core).recall(agent_id,scope_id,memory_settings,query=query,speaker_id=speaker_id,now=now)
@@ -77,10 +81,21 @@ async def read_chat_snapshot(core, activities, agent_id, scope_id, *, now, rates
             target=None if item.target_start_at is None else (
                 str(item.target_start_at.astimezone(zone).date()) if item.time_precision=="day" else
                 item.target_start_at.astimezone(zone).isoformat()+"/"+item.target_end_at.astimezone(zone).isoformat()),
-            plan_status=item.plan_status) for item in found)
+            plan_status=item.plan_status,visibility=item.visibility,
+            activity=None if item.activity is None else ContextActivityMemory(**item.activity.model_dump())) for item in found)
+    relationship=None
+    if (relationship_settings is not None and relationship_settings.enabled and include_relationship
+            and not (relationship_settings.private_only and ":GroupMessage:" in scope_id)
+            and all(isinstance(value,str) and value.strip() and value==value.strip() for value in (platform_id,user_id))
+            and speaker_id==f"{platform_id}:user:{user_id}"):
+        profile=await RelationshipPersistence(core).get(agent_id,platform_id,user_id)
+        if profile is not None and profile.updated_at<=now:
+            relationship=ContextRelationship(agent_id=agent_id,actor_id=profile.actor_id,
+                familiarity=profile.familiarity,affinity=profile.affinity,last_interaction_at=profile.last_interaction_at,
+                updated_at=profile.updated_at)
     return ChatSnapshot(agent_id=agent_id, scope_id=scope_id, state_version=state.version, as_of=now,
                         needs=needs, emotion=None if emotion is None else emotion.current,
-                        activities=views, feedback=feedback, memories=memories)
+                        activities=views, feedback=feedback, memories=memories,speaker_id=speaker_id,relationship=relationship)
 
 
 class _ContextPart(dict):

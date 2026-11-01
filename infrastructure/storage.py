@@ -123,7 +123,24 @@ _MIGRATE_V5_TO_V6 = (
     "CREATE INDEX memory_merge_time_idx ON memories (agent_id, scope_id, about_id, claim_type, kind, provenance, updated_at, memory_id)",
 )
 
+_MIGRATE_V6_TO_V7 = (
+    """CREATE TABLE relationships (
+        agent_id TEXT NOT NULL REFERENCES agent_states(agent_id), platform_id TEXT NOT NULL, user_id TEXT NOT NULL,
+        revision INTEGER NOT NULL CHECK (revision >= 1), updated_at TEXT NOT NULL, profile_json TEXT NOT NULL,
+        PRIMARY KEY (agent_id, platform_id, user_id)
+    )""",
+    """CREATE TABLE relationship_receipts (
+        agent_id TEXT NOT NULL REFERENCES agent_states(agent_id),
+        source_event_id TEXT NOT NULL REFERENCES agent_events(event_id), scope_id TEXT NOT NULL,
+        platform_id TEXT, user_id TEXT, sort_key TEXT NOT NULL, receipt_json TEXT NOT NULL,
+        PRIMARY KEY (agent_id, source_event_id)
+    )""",
+    "CREATE INDEX relationship_history_idx ON relationship_receipts (agent_id, platform_id, user_id, scope_id, sort_key)",
+)
+
 _COLUMNS = {
+    "relationships": {"agent_id", "platform_id", "user_id", "revision", "updated_at", "profile_json"},
+    "relationship_receipts": {"agent_id", "source_event_id", "scope_id", "platform_id", "user_id", "sort_key", "receipt_json"},
     "memories": {"memory_id", "agent_id", "scope_id", "kind", "visibility", "speaker_id", "about_id",
                  "claim_type", "provenance", "topic_key", "target_start_at", "target_end_at", "plan_status",
                  "sort_key", "revision", "record_json", "updated_at", "index_version"},
@@ -288,7 +305,7 @@ class SQLiteStorage:
                         pass
                 async with connection.execute("PRAGMA user_version") as cursor:
                     version = (await cursor.fetchone())[0]
-                if version not in (0, 1, 2, 3, 4, 5, 6):
+                if version not in (0, 1, 2, 3, 4, 5, 6, 7):
                     raise UnsupportedSchemaError(f"不支持数据库结构版本 {version}")
                 if version == 0:
                     for sql in _SCHEMA_V1:
@@ -320,12 +337,17 @@ class SQLiteStorage:
                         async with connection.execute(sql):
                             pass
                     version = 6
+                if version == 6:
+                    for sql in _MIGRATE_V6_TO_V7:
+                        async with connection.execute(sql):
+                            pass
+                    version = 7
                 # 补建辅助索引，不解释业务 JSON。
 
                 async with connection.execute("CREATE INDEX IF NOT EXISTS scheduled_pending_idx "
                                               "ON scheduled_events (agent_id, status, schedule_id)"):
                     pass
-                async with connection.execute("PRAGMA user_version = 6"):
+                async with connection.execute("PRAGMA user_version = 7"):
                     pass
                 await connection.commit()
             except BaseException:

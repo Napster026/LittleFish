@@ -8,7 +8,21 @@ import unicodedata
 INDEX_VERSION = 2
 QUERY_TERM_LIMIT = 16
 RECALL_BATCH_SIZE = 128
+RECALL_REFILL_PAGES = 8
 _SEARCH_PARTICLES = str.maketrans("", "", "了的吗呢啊吧我你他她就才还又")
+
+def shareable_self_activity(record):
+    """可跨会话表达的角色自身模拟事实；不把无归属摘要一并公开。"""
+    item=record.activity
+    if (record.visibility!="self" or record.scope_id is not None or record.claim_type!="event"
+            or record.about_id!="agent:"+record.agent_id or record.speaker_id is not None
+            or record.kind!="story" or record.provenance.value!="simulated" or item is None
+            or item.checkpoint_id is not None or item.phase not in ("completed","failed")):
+        return False
+    task="success" if item.phase=="completed" else "failure"
+    fact=f"活动“{item.name}”完成。" if item.phase=="completed" else f"活动“{item.name}”执行失败。"
+    return item.task==task and record.text==fact
+
 
 def normalized(text):
     return re.sub(r"[^\w\u4e00-\u9fff]", "", unicodedata.normalize("NFKC", text).casefold())
@@ -60,19 +74,71 @@ def _plan_display_key(record):
             record.target_start_at,record.target_end_at,record.time_precision,record.plan_status)
 
 
-def pick_for_display(ranked, limit):
-    """消费已排序结果，在截断前去重；不修改记忆或把粗主题当作事件身份。"""
+def activity_display_key(record):
+    item=record.activity
+    if (record.claim_type!="event" or item is None or record.about_id!="agent:"+record.agent_id
+            or record.speaker_id is not None or not item.activity_id.strip()):
+        return None
+    return (record.agent_id,record.visibility,record.scope_id,record.kind,record.provenance,
+            record.speaker_id,record.about_id,item.activity_id,item.definition_id)
+
+
+def activity_detail_query(query):
+    """只识别明确的阶段/过程细节请求；不把未来计划或用户往事路由为角色经历。"""
+    text=query.casefold()
+    if re.search(r"我的|我们|他的|她的|我刚|他刚|她刚|我最近|他最近|她最近|刚才我|刚才他|刚才她|计划|安排|打算",text):
+        return False
+    return any(word in text for word in ("checkpoint","检查点","各阶段","各个阶段","每个阶段",
+        "阶段细节","阶段内容","活动细节","活动过程","详细过程","具体过程","讲讲过程","说说过程"))
+
+
+def _activity_representative(records, terms):
+    # 具体词命中优先；相同命中度下优先有内容的整项总结，其次保留有信息的阶段。
+    matches=[lexical_similarity(terms,indexed_terms(record)) for record in records]
+    best=max(matches)
+    peers=[record for record,match in zip(records,matches) if match==best]
+    summaries=[]
+    content=[]
+    for record in peers:
+        item=record.activity
+        bare=record.text in (f"活动“{item.name}”完成。",f"活动“{item.name}”执行失败。")
+        if item.phase in ("completed","failed") and item.checkpoint_id is not None and not bare:
+            summaries.append(record)
+        if item.phase=="stage" or not bare:
+            content.append(record)
+    return (summaries or content or peers)[0]
+
+
+def pick_for_display(ranked, limit, *, query=""):
+    """排序后选择展示：保留计划边界，普通活动一条，明确阶段细节最多两条。"""
     if type(limit) is not int or limit<1:
         raise ValueError("展示条数必须为正整数")
     ranked=tuple(ranked)
     details={}
+    activities={}
     for record,_ in ranked:
         key=_plan_display_key(record)
         if key is not None and record.detail_key!="outing":
             details.setdefault(key,set()).add(record.detail_key)
+        key=activity_display_key(record)
+        if key is not None:
+            activities.setdefault(key,[]).append(record)
+    detailed=activity_detail_query(query)
+    terms=search_terms(query)[:QUERY_TERM_LIMIT]
+    representatives={} if detailed else {
+        key:_activity_representative(records,terms).memory_id for key,records in activities.items()}
     picked=[]
     seen=set()
+    activity_counts={}
     for record,_ in ranked:
+        activity_key=activity_display_key(record)
+        if activity_key is not None:
+            if not detailed and representatives[activity_key]!=record.memory_id:
+                continue
+            count=activity_counts.get(activity_key,0)
+            if count>=(2 if detailed else 1):
+                continue
+            activity_counts[activity_key]=count+1
         key=_plan_display_key(record)
         if key is not None:
             # outing 是宽泛主题。只有一个具体安排时，粗细版本才可用同一展示组。
@@ -88,6 +154,11 @@ def pick_for_display(ranked, limit):
 
 
 def query_kind(text):
+    # 仅明确询问助手刚才/最近的经历，避免把用户自己的往事当成活动。
+    if not re.search(r"(?:我|我们|他|她)(?:刚才|刚刚|最近|之前|在做|做了|玩了|的经历)|(?:刚才|刚刚|最近|之前)(?:我|我们|他|她)",text):
+        if (activity_detail_query(text) or re.search(r"(?:刚才|刚刚|最近|之前).*(?:做了什么|干了什么|做过什么|在做什么|玩了什么|经历|发生了什么)",text)
+                or re.search(r"(?:你|自己)的?(?:最近|近期)?经历",text)):
+            return "experience"
     if re.search(r"(?:今天|明天|后天|下周).*(?:干什么|做什么|做啥|干啥|去哪|去哪里|忙什么)",text):
         return "plan"
     if any(w in text for w in ("计划", "安排", "行程", "打算", "出行", "外出")):
